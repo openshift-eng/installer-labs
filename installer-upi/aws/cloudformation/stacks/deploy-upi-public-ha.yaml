@@ -1,0 +1,144 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: OpenShift deployment HA cluster on AWS using UPI method.
+# Options:
+#   Tags:
+#   - Key: AppManagerCFNStackKey
+#     Value: true
+Parameters:
+  VpcCidr:
+    #AllowedPattern: ^(([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])\.){3}([0-9]|[1-9][0-9]|1[0-9]{2}|2[0-4][0-9]|25[0-5])(\/(1[6-9]|2[0-4]))$
+    #ConstraintDescription: CIDR block parameter must be in the form x.x.x.x/16-24.
+    Default: 10.0.0.0/16
+    Description: CIDR block for VPC.
+    Type: String
+
+  NamePrefix:
+    AllowedPattern: ^([a-zA-Z][a-zA-Z0-9\-]{0,26})$
+    MaxLength: 27
+    MinLength: 1
+    ConstraintDescription: Cluster name must be alphanumeric, start with a letter, and have a maximum of 27 characters.
+    Description: A short, representative cluster name to use for host names and other identifying names.
+    Type: String
+
+  TemplatesBaseURL:
+    Type: String
+    Description: Choose 2 Subnets to create Load balancer and ASG
+
+  PrivateEgressTransitGatewayID:
+    Type: String
+    Description: Choose 2 Subnets to create Load balancer and ASG
+
+Resources:
+  Network:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['/', [!Ref TemplatesBaseURL, "01_vpc.yaml"]]
+      TimeoutInMinutes: 10
+      Parameters:
+        InfrastructureName: !Ref InfraName
+        VpcCidr: !Ref VpcCidr
+        AvailabilityZoneCount: 2
+        SubnetBits: 12
+
+  Infra:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['/', [!Ref TemplatesBaseURL, "02_cluster_infra.yaml"]]
+      TimeoutInMinutes: 5
+      Parameters:
+        ClusterName: !Ref ClusterName
+        InfrastructureName: !Ref InfraName
+        HostedZoneId: !Ref HostedZoneId
+        HostedZoneName: !Ref HostedZoneName
+        VpcId: !GetAtt 'VPC.Outputs.VpcId'
+        PrivateSubnets: !GetAtt 'VPC.Outputs.PrivateSubnetIds'
+        PublicSubnets: !GetAtt 'VPC.Outputs.PublicSubnetIds'
+
+  SecurityGroups:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['/', [!Ref TemplatesBaseURL, "03_cluster_security.yaml"]]
+      TimeoutInMinutes: 5
+      Parameters:
+        InfrastructureName: !Ref InfraName
+        VpcCidr: !Ref VpcCidr
+        VpcId: !GetAtt 'VPC.Outputs.VpcId'
+        PrivateSubnets: 'VPC.Outputs.PrivateSubnetIds'
+
+  Bootstrap:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['/', [!Ref TemplatesBaseURL, "04_cluster_bootstrap.yaml"]]
+      TimeoutInMinutes: 5
+      Parameters:
+        ClusterName: !Ref NamePrefix
+        VpcId: !GetAtt 'VPC.Outputs.VpcId'
+        ZoneName: us-east-1a
+        PublicRouteTableId: !GetAtt 'PublicRouteTable.Outputs.RouteTableId'
+        PublicSubnetCidr: "10.10.0.0/20"
+        PrivateRouteTableId: !GetAtt 'PrivateRouteTable.Outputs.RouteTableId'
+        PrivateSubnetCidr: "10.10.128.0/20"
+
+  ControlPlane:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['/', [!Ref TemplatesBaseURL, "05_cluster_master_nodes.yaml"]]
+      TimeoutInMinutes: 5
+      Parameters:
+        ClusterName: !Ref NamePrefix
+        VpcId: !GetAtt 'VPC.Outputs.VpcId'
+        ZoneName: us-east-1b
+        PublicRouteTableId: !GetAtt 'PublicRouteTable.Outputs.RouteTableId'
+        PublicSubnetCidr: "10.10.16.0/20"
+        PrivateRouteTableId: !GetAtt 'PrivateRouteTable.Outputs.RouteTableId'
+        PrivateSubnetCidr: "10.10.144.0/20"
+
+  Compute0:
+    Type: AWS::CloudFormation::Stack
+    Properties:
+      TemplateURL: !Join ['/', [!Ref TemplatesBaseURL, "06_cluster_worker_node.yaml"]]
+      TimeoutInMinutes: 5
+      Parameters:
+        InfrastructureName: !Ref NamePrefix
+        RhcosAmi: !GetAtt 'VPC.Outputs.VpcId'
+        Subnet: us-east-1c
+        WorkerSecurityGroupId: !GetAtt 'PublicRouteTable.Outputs.RouteTableId'
+        IgnitionLocation: "10.10.32.0/20"
+        CertificateAuthorities: !GetAtt 'PrivateRouteTable.Outputs.RouteTableId'
+        WorkerInstanceType: "10.10.160.0/20"
+        WorkerInstanceProfileName
+        RegisterNlbIpTargetsLambdaArn
+        IngressHTTPTargetGroupArn
+        IngressHTTPSTargetGroupArn
+        NodeID
+  
+  # TODO Compute1,2
+
+Outputs:
+  VpcId:
+    Value: !GetAtt 'VPC.Outputs.VpcId'
+  PublicSubnetIds:
+    Description: Subnet IDs of the public subnets.
+    Value:
+      !Join [
+        ",",
+        [!GetAtt 'Subnets1a.Outputs.PublicSubnetId', !GetAtt 'Subnets1b.Outputs.PublicSubnetId', !GetAtt 'Subnets1c.Outputs.PublicSubnetId',]
+      ]
+  PrivateSubnetIds:
+    Description: Subnet IDs of the private subnets.
+    Value:
+      !Join [
+        ",",
+        [!GetAtt 'Subnets1a.Outputs.PrivateSubnetId', !GetAtt 'Subnets1b.Outputs.PrivateSubnetId', !GetAtt 'Subnets1c.Outputs.PrivateSubnetId',]
+      ]
+  PublicRouteTableId:
+    Description: Public Route table ID
+    Value: !GetAtt 'PublicRouteTable.Outputs.RouteTableId'
+  PrivateRouteTableIds:
+    Description: Private Route table IDs
+    Value: !GetAtt 'PrivateRouteTable.Outputs.RouteTableId'
+  BootstrapIP:
+  ControlPlaneIPs:
+  ComputeNode0:
+  ComputeNode1:
+  ComputeNode2:

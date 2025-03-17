@@ -504,6 +504,16 @@ Resources:
       ToPort: 32767
       IpProtocol: udp
 
+  WorkerIngressE2eTestHaproxy:
+    Type: AWS::EC2::SecurityGroupIngress
+    Properties:
+      GroupId: !GetAtt WorkerSecurityGroup.GroupId
+      SourceSecurityGroupId: !GetAtt WorkerSecurityGroup.GroupId
+      Description: E2E workaround for exposing haproxy routes
+      FromPort: 1936
+      ToPort: 1936
+      IpProtocol: tcp
+
   MasterIamRole:
     Type: AWS::IAM::Role
     Properties:

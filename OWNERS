@@ -1,0 +1,5 @@
+# See the OWNERS docs: https://github.com/kubernetes/community/blob/main/contributors/guide/owners.md#owners
+approvers:
+- splat-approvers
+reviewers:
+- splat-reviewers

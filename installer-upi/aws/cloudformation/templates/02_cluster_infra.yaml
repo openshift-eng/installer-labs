@@ -189,6 +189,10 @@ Resources:
       TargetGroupAttributes:
       - Key: deregistration_delay.timeout_seconds
         Value: 60
+      - Key: target_health_state.unhealthy.connection_termination.enabled
+        Value: false
+      - Key: target_health_state.unhealthy.draining_interval_seconds
+        Value: 60
 
   InternalApiListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
@@ -218,6 +222,10 @@ Resources:
         Ref: VpcId
       TargetGroupAttributes:
       - Key: deregistration_delay.timeout_seconds
+        Value: 60
+      - Key: target_health_state.unhealthy.connection_termination.enabled
+        Value: false
+      - Key: target_health_state.unhealthy.draining_interval_seconds
         Value: 60
 
   InternalServiceInternalListener:

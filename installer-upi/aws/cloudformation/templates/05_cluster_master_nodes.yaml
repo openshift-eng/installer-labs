@@ -141,7 +141,7 @@ Resources:
       - DeviceName: /dev/xvda
         Ebs:
           VolumeSize: "120"
-          VolumeType: "gp2"
+          VolumeType: "gp3"
       IamInstanceProfile: !Ref MasterInstanceProfileName
       InstanceType: !Ref MasterInstanceType
       NetworkInterfaces:
@@ -195,7 +195,7 @@ Resources:
       - DeviceName: /dev/xvda
         Ebs:
           VolumeSize: "120"
-          VolumeType: "gp2"
+          VolumeType: "gp3"
       IamInstanceProfile: !Ref MasterInstanceProfileName
       InstanceType: !Ref MasterInstanceType
       NetworkInterfaces:
@@ -249,7 +249,7 @@ Resources:
       - DeviceName: /dev/xvda
         Ebs:
           VolumeSize: "120"
-          VolumeType: "gp2"
+          VolumeType: "gp3"
       IamInstanceProfile: !Ref MasterInstanceProfileName
       InstanceType: !Ref MasterInstanceType
       NetworkInterfaces:

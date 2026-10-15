@@ -1,0 +1,63 @@
+# yamllint disable rule:line-length
+#
+# The long line is the Ignition data URL carrying the base64 of the script
+# reproduced in full below. Ignition requires file contents as a single data
+# URL, so it cannot be wrapped; the plaintext under it is what a reviewer
+# should read instead.
+#
+# Give every node a cloud provider ID, so a cloud controller manager can
+# identify it.
+#
+# This is half of what `platform: external` needs before a node can go Ready;
+# the other half is the CCM itself, in 99_external-02-ccm-aws.yaml. Neither is
+# supplied by the installer: cloudControllerManager.state: External is a
+# declaration that the partner supplies both.
+#
+# A MachineConfig works here -- rather than needing a running Machine Config
+# Operator -- because the bootstrap machine-config server renders everything in
+# the openshift manifest directory into the config it serves at
+# api-int:22623/config/master. Control-plane machines fetch that on first boot,
+# so the unit below runs before their kubelet ever registers.
+#
+# The same pattern is used by the platform-external CI job
+# (release/ci-operator/step-registry/platform-external/pre/conf/manifests) and
+# by Oracle for OCI (oci-openshift/custom_manifests/manifests/02-machineconfig-ccm.yml),
+# which is the strongest evidence available that it is the cross-provider
+# answer rather than an AWS workaround.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: worker
+  name: 00-worker-kubelet-providerid
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    storage:
+      files:
+      - path: /usr/local/bin/kubelet-providerid
+        mode: 493
+        overwrite: true
+        contents:
+          source: data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKIyBSZWNvcmQgdGhpcyBpbnN0YW5jZSdzIGNsb3VkIHByb3ZpZGVyIElEIGZvciB0aGUga3ViZWxldC4KIwojIE5lZWRlZCBiZWNhdXNlIGBwbGF0Zm9ybTogZXh0ZXJuYWxgIHJ1bnMgdGhlIGt1YmVsZXQgd2l0aAojIC0tY2xvdWQtcHJvdmlkZXI9ZXh0ZXJuYWwsIGFuZCB0aGUgY2xvdWQgY29udHJvbGxlciBtYW5hZ2VyIHRoZW4gaGFzIHRvCiMgbWF0Y2ggYSBOb2RlIG9iamVjdCBiYWNrIHRvIGEgY2xvdWQgaW5zdGFuY2UuIEl0IGRvZXMgdGhhdCBieSBwcm92aWRlcklELAojIGZhbGxpbmcgYmFjayB0byBhIGxvb2t1cCBieSBub2RlIG5hbWUgLS0gYW5kIHRoZSBmYWxsYmFjayBkb2VzIG5vdCB3b3JrCiMgaGVyZTogUkhDT1MgcmVnaXN0ZXJzIHRoZSBzaG9ydCBob3N0bmFtZSAoaXAtMTAtMC0xOS0xODkpIHdoaWxlIHRoZSBFQzIKIyBwcml2YXRlIEROUyBuYW1lIGlzIHRoZSBmdWxseSBxdWFsaWZpZWQgb25lIChpcC0xMC0wLTE5LTE4OS5lYzIuaW50ZXJuYWwpLAojIHNvIHRoZSBwcml2YXRlLWRucy1uYW1lIGZpbHRlciBtYXRjaGVzIG5vdGhpbmcgYW5kIHRoZSBub2RlIGlzIG5ldmVyCiMgaW5pdGlhbGlzZWQuIFNldHRpbmcgcHJvdmlkZXJJRCBleHBsaWNpdGx5IHJlbW92ZXMgdGhlIGd1ZXNzd29yay4Kc2V0IC1lIC1vIHBpcGVmYWlsCgojIFJlYWQgYnkga3ViZWxldC5zZXJ2aWNlLCB3aGljaCBwYXNzZXMgaXQgYXMgLS1wcm92aWRlci1pZC4KTk9ERUVOVj0vZXRjL2t1YmVybmV0ZXMva3ViZWxldC1lbnYKCmlmIFsgLWUgIiR7Tk9ERUVOVn0iIF0gJiYgZ3JlcCAtcSAiXktVQkVMRVRfUFJPVklERVJJRD0iICIke05PREVFTlZ9IjsgdGhlbgogICAgZWNobyAiS1VCRUxFVF9QUk9WSURFUklEIGFscmVhZHkgc2V0IGluICR7Tk9ERUVOVn0iCiAgICBleGl0IDAKZmkKCiMgSU1EU3YyIGZpcnN0LCB2MSBhcyBhIGZhbGxiYWNrOiBDQVBBIGxlYXZlcyBpbnN0YW5jZSBtZXRhZGF0YSBvcHRpb25zIGF0IHRoZQojIEFXUyBkZWZhdWx0LCB3aGljaCBpcyB2Mi1vcHRpb25hbCwgYnV0IGFuIEFXU01hY2hpbmUgbWF5IHNldCBodHRwVG9rZW5zIHRvCiMgcmVxdWlyZWQgYW5kIHRoZW4gYW4gdW5hdXRoZW50aWNhdGVkIHJlYWQgcmV0dXJucyA0MDEuCklNRFM9aHR0cDovLzE2OS4yNTQuMTY5LjI1NApUT0tFTj0kKGN1cmwgLWZTcyAtLXJldHJ5IDUgLVggUFVUICIke0lNRFN9L2xhdGVzdC9hcGkvdG9rZW4iIFwKICAgIC1IICJYLWF3cy1lYzItbWV0YWRhdGEtdG9rZW4tdHRsLXNlY29uZHM6IDMwMCIgfHwgdHJ1ZSkKaWYgWyAtbiAiJHtUT0tFTn0iIF07IHRoZW4KICAgIEFVVEg9KC1IICJYLWF3cy1lYzItbWV0YWRhdGEtdG9rZW46ICR7VE9LRU59IikKZWxzZQogICAgQVVUSD0oKQpmaQoKQVo9JChjdXJsIC1mU3MgLS1yZXRyeSA1ICIke0FVVEhbQF19IiAiJHtJTURTfS9sYXRlc3QvbWV0YS1kYXRhL3BsYWNlbWVudC9hdmFpbGFiaWxpdHktem9uZSIpCklOU1RBTkNFX0lEPSQoY3VybCAtZlNzIC0tcmV0cnkgNSAiJHtBVVRIW0BdfSIgIiR7SU1EU30vbGF0ZXN0L21ldGEtZGF0YS9pbnN0YW5jZS1pZCIpCgppZiBbIC16ICIke0FafSIgXSB8fCBbIC16ICIke0lOU1RBTkNFX0lEfSIgXTsgdGhlbgogICAgZWNobyAiRVJST1I6IGNhbm5vdCBvYnRhaW4gdGhlIHByb3ZpZGVyIGlkIGZyb20gdGhlIG1ldGFkYXRhIHNlcnZpY2UuIiA+JjIKICAgIGV4aXQgMQpmaQoKUFJPVklERVJfSUQ9ImF3czovLy8ke0FafS8ke0lOU1RBTkNFX0lEfSIKZWNobyAiU2V0dGluZyBLVUJFTEVUX1BST1ZJREVSSUQ9JHtQUk9WSURFUl9JRH0iCgp0b3VjaCAiJHtOT0RFRU5WfSIKZWNobyAiS1VCRUxFVF9QUk9WSURFUklEPSR7UFJPVklERVJfSUR9IiA+PiAiJHtOT0RFRU5WfSIK
+    systemd:
+      units:
+      - name: kubelet-providerid.service
+        enabled: true
+        contents: |
+          [Unit]
+          Description=Fetch the kubelet provider id from the instance metadata service
+          # The kubelet reads /etc/kubernetes/kubelet-env at start, so this has to have
+          # finished before it does -- there is no second chance once the Node is
+          # registered without a providerID.
+          After=NetworkManager-wait-online.service
+          Before=kubelet.service
+          [Service]
+          ExecStart=/usr/local/bin/kubelet-providerid
+          Type=oneshot
+          RemainAfterExit=yes
+          StandardOutput=journal+console
+          StandardError=journal+console
+          [Install]
+          WantedBy=network-online.target

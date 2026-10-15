@@ -1,0 +1,218 @@
+# yamllint disable rule:document-start
+#
+# The disable covers the `---` SEPARATORS below, not a document-start marker:
+# this file holds several objects and the separators are structural. This
+# repository's .yamllint sets `document-start: present: false`, a rule written
+# for single-document files -- yamllint reports every `---` under it and
+# cannot tell a separator from a leading marker. The leading marker this file
+# used to carry has been removed; what is left cannot be.
+#
+# Why several objects in one file rather than one each, which is what
+# extra-manifests/ requires: this directory is NOT applied by the bootstrap
+# node. It is read by the installer's local Cluster API control plane, which
+# decodes multi-document YAML correctly (ObjectsFromManifest). The two
+# directories have genuinely different contracts.
+# Worker machines for a `platform: external` install driven by CAPA.
+#
+# USER-SUPPLIED, like everything in this tree, and OPTIONAL: delete this file
+# and the install still succeeds as a compact three-node cluster. Every run up
+# to and including mrb-ext12 did exactly that.
+#
+# `run-create-command.sh` rewrites two tokens before `create cluster`:
+#   CLUSTER_ID     -> the run's infrastructure ID
+#   ami-REPLACE  -> the region's RHCOS AMI
+#
+#
+# WHY THIS FILE HAS TO EXIST AT ALL
+#
+# On an integrated platform there are no worker Machines here, and their
+# absence is correct: workers arrive *after* bootstrap, created by machine-api
+# from MachineSets the installer generates, reconciled in-cluster by that
+# cloud's actuator.
+#
+# A non-integrated provider ships no machine-api actuator, and the installer
+# generates no MachineSets for this platform -- pkg/asset/machines/worker.go:807
+# is `case externaltypes.Name, nonetypes.Name:` with an empty body. So nothing
+# ever creates a worker. Without this file the cluster is permanently capped at
+# its control plane; day-0 Cluster API Machines are the only way a
+# `platform: external` cluster gets compute today.
+#
+# This is a real limitation, not a pilot shortcut: these Machines are created
+# once, by the installer, and nothing reconciles them afterwards. There is no
+# scaling, no replacement of a failed node, and no MachineSet. Day-2 compute
+# for non-integrated providers is unsolved.
+#
+#
+# WHAT IS DIFFERENT FROM A MASTER, AND WHY
+#
+# 1. NO `cluster.x-k8s.io/control-plane` LABEL. Its absence is the whole
+#    definition of a worker to CAPA, which reads it through
+#    util.IsControlPlaneMachine. Two consequences follow automatically and
+#    neither needs configuring: the machine gets the node security group
+#    rather than node + controlplane, and it is NOT registered with the API
+#    load balancer target groups. A worker must not answer on 6443 or 22623.
+#
+#    Do not "fix" a worker that is missing from the API target groups. That is
+#    the correct outcome.
+#
+# 2. `dataSecretName: CLUSTER_ID-worker`. This Secret did not exist until the
+#    External provider began implementing IgnitionProvider -- see
+#    pkg/infrastructure/external/clusterapi/ignition.go. The shared default
+#    branch creates only `<infraID>-bootstrap` and `<infraID>-master`, which is
+#    why earlier versions of ../20_master.yaml said there was no third Secret
+#    to point at. There is now.
+#
+#    Pointing a worker at `<infraID>-master` is not a workaround for an older
+#    installer. It would hand the node the master pointer config and it would
+#    join as a control-plane node.
+#
+# 3. The pointer aims at https://api-int.<clusterDomain>:22623/config/worker,
+#    one path element different from the master's. The same InfraReady hook
+#    dependency applies: the name must resolve inside the VPC before the
+#    machine boots.
+#
+#    Unlike a master, a worker is created *before* the permanent machine config
+#    server exists. The bootstrap node's MCS serves every pool, including
+#    worker, so a machine that boots early fetches its config from there; if it
+#    boots before even that is up, Ignition retries rather than failing. This is
+#    why day-0 workers are viable at all.
+#
+#
+# WHAT THIS CHANGES ABOUT THE INSTALL, AND IT IS NOT NOTHING
+#
+# The installer waits for these machines BEFORE bootstrap. The loop at
+# pkg/infrastructure/clusterapi/clusterapi.go:381-393 collects every
+# clusterv1.Machine it creates, with no control-plane filter, and :405 waits
+# for all of them inside provisionTimeout (15m default). So on every other
+# platform workers provision after bootstrap and cannot delay it; here they
+# provision first and a worker that fails to come up fails the install.
+#
+# The wait is only for Machine.status.phase to reach Provisioned or Running --
+# the EC2 instance existing, not the node joining -- so in practice it adds
+# little. The failure mode is the part worth knowing about.
+#
+#
+# SET compute.replicas TO MATCH, OR DECIDE NOT TO
+#
+# install-config `compute[0].replicas` does NOT create these machines and
+# cannot: no MachineSets are generated. On this platform it controls exactly
+# one thing, through pkg/asset/manifests/scheduler.go:66-75 --
+#
+#   replicas: 0  -> MastersSchedulable: true.  Masters carry the `worker` role
+#                   once Ready, workloads land on them, and these machines are
+#                   extra capacity. Safest: if a worker never joins, the
+#                   cluster still converges.
+#
+#   replicas: 2  -> MastersSchedulable: false. The conventional shape, and the
+#                   one to use if the point is to prove real workers. Riskier:
+#                   ingress and console have nowhere to run until these
+#                   machines join, so a worker that fails takes the install
+#                   with it.
+#
+# Keep it at 0 the first time. Move to 2 once a run has shown these machines
+# joining as nodes.
+#
+#
+# TEARDOWN is covered without doing anything. These are Cluster API objects, so
+# they are recorded in .clusterapi_output/ with the rest and removed by the
+# same restore-then-delete path `destroy cluster` uses for the masters. Unlike
+# the ingress load balancer and the DNS records, no hook is involved.
+#
+#
+# One AZ, for the same reason ../20_master.yaml gives: ../cluster.yaml defines
+# only us-east-1a.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-worker-0
+  namespace: openshift-cluster-api-guests
+  # No cluster.x-k8s.io/control-plane label. See note 1 above.
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-worker
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: AWSMachine
+    name: CLUSTER_ID-worker-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachine
+metadata:
+  name: CLUSTER_ID-worker-0
+  namespace: openshift-cluster-api-guests
+spec:
+  additionalTags:
+    kubernetes.io/cluster/CLUSTER_ID: owned
+  ami:
+    id: ami-REPLACE
+  instanceType: m6i.xlarge
+  publicIP: false
+  ignition:
+    version: "3.2"
+    # worker.ign is a pointer config, the same size class as master.ign, so it
+    # fits EC2 user-data and needs no S3 round trip.
+    storageType: UnencryptedUserData
+  instanceMetadataOptions:
+    httpEndpoint: enabled
+    httpTokens: optional
+  rootVolume:
+    encrypted: true
+    size: 120
+    type: gp3
+  # Empty string, not absent: absent falls back to AWSCluster.spec.sshKeyName
+  # and then to a CAPA default key name. OpenShift delivers SSH keys through
+  # ignition.
+  sshKeyName: ""
+  subnet:
+    filters:
+    - name: tag:Name
+      values:
+      - CLUSTER_ID-subnet-private-us-east-1a
+#
+# Deliberately NOT set, same as the masters: iamInstanceProfile (this pilot
+# creates no IAM), and any security group or load balancer reference (CAPA
+# derives both from the absence of the control-plane label).
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-worker-1
+  namespace: openshift-cluster-api-guests
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-worker
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: AWSMachine
+    name: CLUSTER_ID-worker-1
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachine
+metadata:
+  name: CLUSTER_ID-worker-1
+  namespace: openshift-cluster-api-guests
+spec:
+  additionalTags:
+    kubernetes.io/cluster/CLUSTER_ID: owned
+  ami:
+    id: ami-REPLACE
+  instanceType: m6i.xlarge
+  publicIP: false
+  ignition:
+    version: "3.2"
+    storageType: UnencryptedUserData
+  instanceMetadataOptions:
+    httpEndpoint: enabled
+    httpTokens: optional
+  rootVolume:
+    encrypted: true
+    size: 120
+    type: gp3
+  sshKeyName: ""
+  subnet:
+    filters:
+    - name: tag:Name
+      values:
+      - CLUSTER_ID-subnet-private-us-east-1a

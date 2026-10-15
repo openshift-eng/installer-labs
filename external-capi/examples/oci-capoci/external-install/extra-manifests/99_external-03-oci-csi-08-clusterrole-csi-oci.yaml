@@ -1,0 +1,94 @@
+# yamllint disable rule:indentation rule:brackets rule:line-length rule:comments
+#
+# COPIED, NOT WRITTEN -- object 9 of 13 from Oracle's bundle.
+#
+#   upstream  https://github.com/oracle-quickstart/oci-openshift
+#   commit    4944984e3895198405b512f610fe665a9976db28
+#   ref       tag v1.6.1, 2026-08-12
+#   path      custom_manifests/oci-ccm-csi-drivers/v1.34.0/01-oci-csi.yml
+#   sha256    f3af5c329e11a2272836856d29f3cc6f0af852ec0e84c79850b3c6538a858803
+#   object    ClusterRole/csi-oci
+#
+# TRACKING UPSTREAM DRIFT. The permalink to the exact bytes this was copied
+# from is the upstream URL, then `/blob/`, then the commit, then the path --
+# all three are above. To check for drift, hash the current upstream file and
+# compare with the sha256 above:
+#
+#   git -C oci-openshift fetch origin && \
+#     git -C oci-openshift show origin/main:custom_manifests/oci-ccm-csi-drivers/v1.34.0/01-oci-csi.yml | sha256sum
+#
+# If it differs, re-run tools/oci-capoci/gen-ccm-csi.py against the new
+# checkout. Do not hand-edit this file: it is generated, and a hand edit makes
+# the sha256 above a lie, which is the one thing that would make this header
+# worse than no header at all.
+#
+# One object per file because the bootstrap node applies this directory one
+# object per file and silently drops the rest of a multi-document one; the
+# installer refuses such a file outright. See oci-ccm-csi-bundle.md in this
+# directory for the full account: why these are day-0 while their config
+# Secrets are not, what the two deltas against upstream are, and the
+# partner-manifest supply-chain gap this bundle exposes.
+#
+# The yamllint disable is cosmetic only, and every rule in it is a house style
+# this repository applies to code it writes: Oracle indents sequences, writes
+# `[ "x" ]`, puts one space before a trailing comment and runs container args
+# past 120 columns. Reformatting a vendored file to satisfy them was tried and
+# broke it, and it would also destroy the one property that makes the sha256
+# above useful -- that these bytes can be diffed against upstream. See
+# oci-ccm-csi-bundle.md.
+#
+# oci-csi-09-node-rbac-cr.yaml
+kind: ClusterRole
+apiVersion: rbac.authorization.k8s.io/v1
+metadata:
+ name: csi-oci
+ namespace: oci-csi
+rules:
+ - apiGroups: [""]
+   resources: ["events"]
+   verbs: ["get", "list", "watch", "create", "update", "patch"]
+ - apiGroups: [""]
+   resources: ["nodes"]
+   verbs: ["get", "list", "watch"]
+ - apiGroups: ["volume.oci.oracle.com"]
+   resources: ["blockscsiinfos"]
+   verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+ - apiGroups: [""]
+   resources: ["persistentvolumes"]
+   verbs: ["get", "list", "watch", "create", "delete", "patch"]
+ - apiGroups: [""]
+   resources: ["persistentvolumeclaims"]
+   verbs: ["get", "list", "watch", "update", "create"]
+ - apiGroups: ["storage.k8s.io"]
+   resources: ["storageclasses", "volumeattachments", "volumeattachments/status", "csinodes"]
+   verbs: ["get", "list", "watch", "patch"]
+ - apiGroups: ["coordination.k8s.io"]
+   resources: ["leases"]
+   verbs: ["get", "list", "watch", "create", "delete", "update", "patch"]
+ - apiGroups: [""]
+   resources: ["endpoints"]
+   verbs: ["get", "watch", "create", "update"]
+ - apiGroups: [""]
+   resources: ["pods"]
+   verbs: ["get", "list", "watch"]
+ - apiGroups: [""]
+   resources: ["persistentvolumeclaims/status"]
+   verbs: ["patch"]
+ - apiGroups: [ "snapshot.storage.k8s.io" ]
+   resources: [ "volumesnapshotclasses" ]
+   verbs: [ "get", "list", "watch" ]
+ - apiGroups: [ "snapshot.storage.k8s.io" ]
+   resources: [ "volumesnapshotcontents" ]
+   verbs: [ "create", "get", "list", "watch", "update", "delete", "patch" ]
+ - apiGroups: [ "snapshot.storage.k8s.io" ]
+   resources: [ "volumesnapshotcontents/status" ]
+   verbs: [ "update", "patch" ]
+ - apiGroups: [ "snapshot.storage.k8s.io" ]
+   resources: [ "volumesnapshots" ]
+   verbs: [ "get", "list", "watch", "update", "patch" ]
+ - apiGroups: [ "snapshot.storage.k8s.io" ]
+   resources: [ "volumesnapshots/status" ]
+   verbs: [ "update", "patch" ]
+ - apiGroups: [ "" ]
+   resources: [ "serviceaccounts" ]
+   verbs: [ "get", "list", "watch", "create" ]

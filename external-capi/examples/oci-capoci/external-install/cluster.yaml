@@ -1,0 +1,790 @@
+# yamllint disable rule:document-start
+#
+# The disable covers the `---` SEPARATORS below, not a document-start marker:
+# this file holds several objects and the separators are structural. This
+# repository's .yamllint sets `document-start: present: false`, a rule written
+# for single-document files -- yamllint reports every `---` under it and
+# cannot tell a separator from a leading marker. The leading marker this file
+# used to carry has been removed; what is left cannot be.
+#
+# Why several objects in one file rather than one each, which is what
+# extra-manifests/ requires: this directory is NOT applied by the bootstrap
+# node. It is read by the installer's local Cluster API control plane, which
+# decodes multi-document YAML correctly (ObjectsFromManifest). The two
+# directories have genuinely different contracts.
+# Cluster API manifests for a `platform: external` install driven by CAPOCI.
+#
+# STATUS: NEVER RUN. Written 2026-09-30 from the CAPOCI type definitions, with
+# no OCI account available. The aws-capa sibling of this file was derived from
+# a captured, working install; this one was not. Treat every value as a
+# proposal until a run contradicts it.
+#
+# These are USER-SUPPLIED. The installer generates nothing for this platform:
+# it does not know the provider's API. It reads this directory, creates what it
+# finds in its temporary local control plane, and waits for
+# Cluster.status.infrastructureReady.
+#
+# `scripts/run-create-command.sh` rewrites `CLUSTER_ID` to the run's
+# INFRASTRUCTURE ID before `create cluster`, so that token is the name
+# placeholder and must not be used for anything else. See
+# machines/README.md for why the substitution has to happen and why it forces
+# a multi-phase workflow.
+#
+# Namespace: the installer forces every object into
+# openshift-cluster-api-guests (pkg/infrastructure/clusterapi/clusterapi.go:183),
+# so these values are for readability, not load-bearing.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: CLUSTER_ID
+  namespace: openshift-cluster-api-guests
+spec:
+  clusterNetwork:
+    apiServerPort: 6443
+  controlPlaneEndpoint:
+    host: ""
+    port: 0
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: OCICluster
+    name: CLUSTER_ID
+    namespace: openshift-cluster-api-guests
+---
+# Provider credentials.
+#
+# OCIClusterIdentity points at a Secret whose keys CAPOCI reads in
+# cloud/util/util.go:132-137 -- tenancy, user, fingerprint, key, and optionally
+# passphrase and region. The constants are in cloud/config/config.go:36-47.
+#
+# THE SECRET IS NOT IN THIS DIRECTORY, DELIBERATELY. It holds an OCI API
+# signing key. run-create-command.sh applies it to the local control plane from
+# a path outside the workspace, so a private key never lands in a tree that
+# gets archived, copied or published. See scripts/README.md.
+#
+# This Secret lives ONLY in the installer's temporary local control plane
+# (envtest etcd + kube-apiserver). It is never delivered to the cluster being
+# installed. The installed cluster's own OCI access is instance-principal based
+# and carries no key at all -- see extra-manifests/README.md.
+#
+# allowedNamespaces is enforced at cloud/util/util.go:331. An empty selector
+# with a null list means "any namespace", which is what the installer needs
+# since it forces everything into openshift-cluster-api-guests.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCIClusterIdentity
+metadata:
+  name: CLUSTER_ID-identity
+  namespace: openshift-cluster-api-guests
+spec:
+  type: UserPrincipal
+  principalSecret:
+    name: CLUSTER_ID-oci-credentials
+    namespace: openshift-cluster-api-guests
+  allowedNamespaces: {}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCICluster
+metadata:
+  name: CLUSTER_ID
+  namespace: openshift-cluster-api-guests
+spec:
+  # Substituted by run-create-command.sh from $OCI_COMPARTMENT_ID.
+  compartmentId: COMPARTMENT_OCID
+  region: REGION_ID
+  identityRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: OCIClusterIdentity
+    name: CLUSTER_ID-identity
+    namespace: openshift-cluster-api-guests
+  # One tag, for humans and for the destroy path. Nothing in OCI keys off it:
+  # the OCI CCM finds load balancers by Service annotation and nodes by
+  # providerID, and neither CAPOCI nor Oracle's own terraform reads a cluster
+  # tag at all.
+  #
+  # This block used to carry `kubernetes.io/cluster/CLUSTER_ID: owned` as well,
+  # with a comment asserting the CCM matched on it. Both the tag and the claim
+  # were an AWS reflex. OCI rejects a free-form tag key containing "/" --
+  # `oci network vcn update --freeform-tags '{"kubernetes.io/cluster/x":"y"}'`
+  # returns 400 InvalidParameter "Invalid tags", measured 2026-10-01 -- so the
+  # very first VCN create failed and the cluster never got past Provisioning.
+  # A plain key on the same VCN in the same second was accepted.
+  freeformTags:
+    openshift-cluster-id: CLUSTER_ID
+  controlPlaneEndpoint:
+    host: ""
+    port: 0
+  networkSpec:
+    vcn:
+      name: CLUSTER_ID-vcn
+      cidr: 10.0.0.0/16
+      # NOT a domain name, despite the field name. An OCI VCN dnsLabel must be
+      # alphanumeric only, start with a letter, and be at most 15 characters --
+      # so no dots and no hyphens. This field was CLUSTER_DNS, which the create
+      # script substitutes with the full cluster domain
+      # (mrb-oci1.oci.splat.devcluster.openshift.com): three invalid characters
+      # and three times the length limit. run-create-command.sh now derives a
+      # sanitised label from the infrastructure ID instead.
+      #
+      # It only names the VCN's private *.oraclevcn.com resolver domain, which
+      # OpenShift does not depend on -- api/api-int/*.apps are created by the
+      # infraReady and postProvision hooks in the public zone.
+      dnsLabel: VCN_DNS_LABEL
+      # Subnet names here are what machines reference by `subnetName`, so these
+      # strings are a contract with machines/*.yaml. Roles are the values
+      # CAPOCI accepts for an OCICluster (api/v1beta2/types.go:31):
+      # control-plane, control-plane-endpoint, worker, service-lb, custom.
+      #
+      # The CIDRs differ from CAPOCI's own defaults
+      # (api/v1beta2/constants.go:21-32), which give the control-plane machine
+      # subnet a /29 -- eight addresses, three of them reserved by OCI. That
+      # leaves five usable for three masters plus a bootstrap, which works but
+      # has no headroom and no room for a replacement machine. Widened to /27.
+      subnets:
+      - role: control-plane-endpoint
+        name: CLUSTER_ID-subnet-cp-endpoint
+        cidr: 10.0.0.0/27
+        type: public
+      - role: control-plane
+        name: CLUSTER_ID-subnet-control-plane
+        cidr: 10.0.0.32/27
+        type: private
+      - role: worker
+        name: CLUSTER_ID-subnet-worker
+        cidr: 10.0.64.0/20
+        type: private
+      # The OCI CCM creates LoadBalancer Services into this subnet, and its
+      # OCID is one of the four values the CCM config needs. The infraReady
+      # hook reads it back out of
+      # .spec.networkSpec.vcn.subnets[] | select(.role=="service-lb") | .id
+      # -- CAPOCI writes the created OCID into the SPEC, not into status
+      # (cloud/scope/subnet_reconciler.go, desiredSubnet.ID = subnet.Id).
+      - role: service-lb
+        name: CLUSTER_ID-subnet-service-lb
+        cidr: 10.0.32.0/27
+        type: public
+      # EVERY NSG RULE, SPELLED OUT -- and it has to be.
+      #
+      # Three reasons this block cannot be a short list of additions to
+      # CAPOCI's defaults, and a fourth that caps how long it is allowed to be.
+      #
+      # 1. CAPOCI PRUNES RULES IT DID NOT PUT THERE.
+      #    UpdateNSGSecurityRulesIfNeeded (cloud/scope/nsg_reconciler.go:190-290)
+      #    diffs actual against desired in BOTH directions and calls
+      #    RemoveNetworkSecurityGroupSecurityRules on everything that is actual
+      #    but not desired. A rule added out of band by a hook is deleted on the
+      #    next reconcile.
+      #
+      #    This is the opposite of the API load balancer below, where the hook
+      #    DOES add a listener out of band -- and the difference is not a design
+      #    decision, it is an accident of how thorough each comparison happens
+      #    to be. IsNLBEqual (network_load_balancer_reconciler.go:301-318) never
+      #    enumerates listeners, so it cannot notice one. An absence of pruning,
+      #    not a guarantee.
+      #
+      #    The contract that falls out of this, stated here because it is the
+      #    generic lesson and not an OCI detail: A HOOK MAY ONLY ADD RESOURCES
+      #    THE PROVIDER DOES NOT RECONCILE. Anything the provider reconciles has
+      #    to come from the provider's own spec, as this block does.
+      #
+      # 2. DECLARING A ROLE'S NSG IS ALL-OR-NOTHING. NSGSpec()
+      #    (api/v1beta2/ocicluster_webhook.go:403-440) defaults an NSG for a role
+      #    only when neither an NSG nor a security list already exists for that
+      #    role (IsNSGExitsByRole). Declare one rule for a role and you own every
+      #    rule for that role.
+      #
+      # 3. CAPOCI'S DEFAULT RULES ARE WRITTEN AGAINST ITS OWN CIDR CONSTANTS,
+      #    NOT AGAINST THE SUBNETS DECLARED ABOVE
+      #    (api/v1beta2/constants.go:19-33):
+      #
+      #      role                    CAPOCI constant  declared above
+      #      control-plane-endpoint  10.0.0.8/29      10.0.0.0/27
+      #      control-plane           10.0.0.0/29      10.0.0.32/27
+      #      worker                  10.0.64.0/20     10.0.64.0/20   (matches)
+      #      service-lb              10.0.0.32/27     10.0.32.0/27
+      #
+      #    So the deliberate /29 -> /27 widening three comments up silently
+      #    desynchronised the rules from the subnets. The endpoint NSG's default
+      #    egress permits 6443 only to 10.0.0.0/29, while the masters sit in
+      #    10.0.0.32/27 -- EVEN THE API SERVER would have been unreachable. And
+      #    CAPOCI's default service-lb CIDR, 10.0.0.32/27, is by coincidence our
+      #    control-plane subnet.
+      #
+      # 4. NO NSG MAY EXCEED 25 RULES, and that is why this set is hand-chosen
+      #    rather than "CAPOCI's defaults plus what OpenShift needs".
+      #
+      #    MEASURED, not read: the first attempt generated exactly that union,
+      #    which came to 42 rules on the control-plane NSG, and the run failed
+      #    in a loop until the 15-minute infraReady timeout --
+      #
+      #      400 InvalidParameter: Count of security rules to add: 42 cannot be
+      #      greater than 25     (AddNetworkSecurityGroupSecurityRules)
+      #
+      #    The cap is on ONE API CALL, not on the group -- OCI allows far more
+      #    rules per NSG than this. CAPOCI sends every rule for a group in a
+      #    single AddNetworkSecurityGroupSecurityRules
+      #    (cloud/scope/nsg_reconciler.go:429) and does not chunk, so the
+      #    per-call cap becomes a per-NSG cap for anyone using CAPOCI. Its own
+      #    defaults are around a dozen rules and never reach it; an OpenShift
+      #    port set does, immediately. Batching this in CAPOCI is a small,
+      #    self-contained upstream fix and is recorded as one.
+      #
+      # WHAT THAT COSTS, STATED PLAINLY. Staying under 25 means the intra-
+      # cluster rules are sourced from the whole VCN CIDR instead of from the
+      # control-plane and worker subnets separately -- one rule where there
+      # would otherwise be two. The VCN contains nothing but this cluster's four
+      # subnets, so today the two formulations permit the same traffic. They
+      # stop being equivalent the moment anything else is placed in this VCN,
+      # and at that point these rules are too permissive. A cluster sharing a
+      # VCN with other workloads should spend the rule budget on per-subnet
+      # sources, or wait for CAPOCI to chunk.
+      #
+      # The rules below are therefore chosen, not inherited. What is here beyond
+      # a plain Kubernetes set:
+      #
+      #   * 22623 on the control-plane-endpoint NSG, ingress FROM THE VCN ONLY,
+      #     not from 0.0.0.0/0 as 6443 is. The machine config server hands out
+      #     Ignition, which carries the cluster's day-0 secrets, so it is the one
+      #     listener that must never be reachable from the internet. It can be
+      #     closed off only because api-int resolves to the load balancer's
+      #     PRIVATE address -- see nlb_private_ip in hooks/infra-hook.sh. If that
+      #     ever changes, this rule has to change with it.
+      #   * the OpenShift and OVN-Kubernetes ports CAPOCI's Calico-shaped
+      #     defaults do not open: Geneve 6081/UDP, VXLAN 4789/UDP, IKE 500/UDP
+      #     and 4500/UDP, ESP (protocol 50), 9000-9999, 30000-32767, 10256, plus
+      #     10257/10259/8091 on the control plane. Taken from the port set in the
+      #     aws-capa sibling example, which has actually installed a cluster.
+      #     CAPOCI's Calico-only rules -- BGP 179 and IP-in-IP -- are dropped,
+      #     since OVN-Kubernetes is the network type in install-config.yaml.
+      #   * service-lb egress to node ports on BOTH the control-plane and worker
+      #     subnets. CAPOCI's default reaches the worker subnet only; this is a
+      #     compact cluster, so the ingress routers run on the masters and every
+      #     Route would have been unreachable while each piece looked correct.
+      #   * etcd (2379-2380) sourced from the control-plane subnet rather than
+      #     the VCN -- the one place the rule budget is spent on precision.
+      #
+      # CAPOCI's service-lb defaults already permit 80 and 443 from 0.0.0.0/0
+      # (GetServiceLoadBalancerDefaultIngressRules, ocicluster_webhook.go:745),
+      # so those are carried over rather than discovered. Verified rather than
+      # assumed, because divergence 076 recorded it as an open question.
+      networkSecurityGroup:
+        list:
+        - name: control-plane-endpoint
+          role: control-plane-endpoint
+          ingressRules:
+          - ingressRule:
+              description: Kubernetes API from anywhere
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 0.0.0.0/0
+              tcpOptions:
+                destinationPortRange:
+                  min: 6443
+                  max: 6443
+          - ingressRule:
+              description: Machine config server, from inside the VCN only
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 22623
+                  max: 22623
+          - ingressRule:
+              description: Path discovery
+              protocol: '1'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              icmpOptions:
+                type: 3
+                code: 4
+          egressRules:
+          - egressRule:
+              description: Kubernetes API to the control plane
+              protocol: '6'
+              destinationType: CIDR_BLOCK
+              destination: 10.0.0.32/27
+              tcpOptions:
+                destinationPortRange:
+                  min: 6443
+                  max: 6443
+          - egressRule:
+              description: Machine config server to the control plane
+              protocol: '6'
+              destinationType: CIDR_BLOCK
+              destination: 10.0.0.32/27
+              tcpOptions:
+                destinationPortRange:
+                  min: 22623
+                  max: 22623
+        - name: control-plane
+          role: control-plane
+          ingressRules:
+          - ingressRule:
+              description: SSH
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 22
+                  max: 22
+          - ingressRule:
+              description: Kubernetes API
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 6443
+                  max: 6443
+          - ingressRule:
+              description: Machine config server
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 22623
+                  max: 22623
+          - ingressRule:
+              description: etcd client and peer
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.32/27
+              tcpOptions:
+                destinationPortRange:
+                  min: 2379
+                  max: 2380
+          - ingressRule:
+              description: kube-controller-manager
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 10257
+                  max: 10257
+          - ingressRule:
+              description: kube-scheduler
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 10259
+                  max: 10259
+          - ingressRule:
+              description: Bootstrap konnectivity
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 8091
+                  max: 8091
+          - ingressRule:
+              description: Geneve overlay (OVN-Kubernetes)
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 6081
+                  max: 6081
+          - ingressRule:
+              description: VXLAN overlay
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 4789
+                  max: 4789
+          - ingressRule:
+              description: IKE
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 500
+                  max: 500
+          - ingressRule:
+              description: IKE NAT traversal
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 4500
+                  max: 4500
+          - ingressRule:
+              description: IPsec ESP
+              protocol: '50'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+          - ingressRule:
+              description: Host service ports (TCP)
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 9000
+                  max: 9999
+          - ingressRule:
+              description: Host service ports (UDP)
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 9000
+                  max: 9999
+          - ingressRule:
+              description: Service node ports (TCP)
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 30000
+                  max: 32767
+          - ingressRule:
+              description: Service node ports (UDP)
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 30000
+                  max: 32767
+          - ingressRule:
+              description: Kubelet
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 10250
+                  max: 10250
+          - ingressRule:
+              description: kube-proxy health
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 10256
+                  max: 10256
+          # THE INGRESS ROUTERS RUN ON THE HOST NETWORK, SO 80 AND 443 ARE
+          # NODE PORTS, NOT POD PORTS. The `platform: external`
+          # IngressController defaults to
+          # endpointPublishingStrategy.type: HostNetwork, so the
+          # router-external-default Service's endpoints are NODE IPs on 80
+          # and 443 -- not pod IPs. Every nodePort hop that OVN load-balances
+          # to a router on a DIFFERENT node therefore leaves the node and
+          # arrives at that node's :80 or :443.
+          #
+          # MEASURED 2026-10-01, run 13 (divergence 078). Without these two
+          # rules the cluster installs, the NLB is created, its backends go
+          # healthy and the routers serve correctly -- and external ingress
+          # still times out, because CAPOCI's node NSGs open 30000-32767 but
+          # not 80/443. From a worker, with the routers on masters -1 and -2:
+          #
+          #   10.0.0.52:30648, 10.0.0.61:30648  -> open   (router is LOCAL)
+          #   10.0.0.35, 10.0.66.90, 10.0.68.47 -> TIMEOUT (router is REMOTE)
+          #
+          # It also explains the shape of the failure: connect() always
+          # succeeds, because the socket belongs to ovnkube, and the hang
+          # happens afterwards when OVN picks the remote backend.
+          #
+          # Source is the VCN CIDR, never 0.0.0.0/0. Only the service-lb NSG
+          # above faces the internet on these ports; these rules exist purely
+          # so one node may reach another node's router.
+          - ingressRule:
+              description: Ingress router HTTP, hostNetwork, from inside the VCN only
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 80
+                  max: 80
+          - ingressRule:
+              description: Ingress router HTTPS, hostNetwork, from inside the VCN only
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 443
+                  max: 443
+          - ingressRule:
+              description: Path discovery
+              protocol: '1'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              icmpOptions:
+                type: 3
+                code: 4
+          egressRules:
+          - egressRule:
+              description: Control plane to internet
+              protocol: all
+              destinationType: CIDR_BLOCK
+              destination: 0.0.0.0/0
+        - name: worker
+          role: worker
+          ingressRules:
+          - ingressRule:
+              description: SSH
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 22
+                  max: 22
+          - ingressRule:
+              description: Geneve overlay (OVN-Kubernetes)
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 6081
+                  max: 6081
+          - ingressRule:
+              description: VXLAN overlay
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 4789
+                  max: 4789
+          - ingressRule:
+              description: IKE
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 500
+                  max: 500
+          - ingressRule:
+              description: IKE NAT traversal
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 4500
+                  max: 4500
+          - ingressRule:
+              description: IPsec ESP
+              protocol: '50'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+          - ingressRule:
+              description: Host service ports (TCP)
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 9000
+                  max: 9999
+          - ingressRule:
+              description: Host service ports (UDP)
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 9000
+                  max: 9999
+          - ingressRule:
+              description: Service node ports (TCP)
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 30000
+                  max: 32767
+          - ingressRule:
+              description: Service node ports (UDP)
+              protocol: '17'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              udpOptions:
+                destinationPortRange:
+                  min: 30000
+                  max: 32767
+          - ingressRule:
+              description: Kubelet
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 10250
+                  max: 10250
+          - ingressRule:
+              description: kube-proxy health
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 10256
+                  max: 10256
+          # THE INGRESS ROUTERS RUN ON THE HOST NETWORK, SO 80 AND 443 ARE
+          # NODE PORTS, NOT POD PORTS. The `platform: external`
+          # IngressController defaults to
+          # endpointPublishingStrategy.type: HostNetwork, so the
+          # router-external-default Service's endpoints are NODE IPs on 80
+          # and 443 -- not pod IPs. Every nodePort hop that OVN load-balances
+          # to a router on a DIFFERENT node therefore leaves the node and
+          # arrives at that node's :80 or :443.
+          #
+          # MEASURED 2026-10-01, run 13 (divergence 078). Without these two
+          # rules the cluster installs, the NLB is created, its backends go
+          # healthy and the routers serve correctly -- and external ingress
+          # still times out, because CAPOCI's node NSGs open 30000-32767 but
+          # not 80/443. From a worker, with the routers on masters -1 and -2:
+          #
+          #   10.0.0.52:30648, 10.0.0.61:30648  -> open   (router is LOCAL)
+          #   10.0.0.35, 10.0.66.90, 10.0.68.47 -> TIMEOUT (router is REMOTE)
+          #
+          # It also explains the shape of the failure: connect() always
+          # succeeds, because the socket belongs to ovnkube, and the hang
+          # happens afterwards when OVN picks the remote backend.
+          #
+          # Source is the VCN CIDR, never 0.0.0.0/0. Only the service-lb NSG
+          # above faces the internet on these ports; these rules exist purely
+          # so one node may reach another node's router.
+          - ingressRule:
+              description: Ingress router HTTP, hostNetwork, from inside the VCN only
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 80
+                  max: 80
+          - ingressRule:
+              description: Ingress router HTTPS, hostNetwork, from inside the VCN only
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              tcpOptions:
+                destinationPortRange:
+                  min: 443
+                  max: 443
+          - ingressRule:
+              description: Path discovery
+              protocol: '1'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              icmpOptions:
+                type: 3
+                code: 4
+          egressRules:
+          - egressRule:
+              description: Worker to internet
+              protocol: all
+              destinationType: CIDR_BLOCK
+              destination: 0.0.0.0/0
+        - name: service-lb
+          role: service-lb
+          ingressRules:
+          - ingressRule:
+              description: HTTP ingress
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 0.0.0.0/0
+              tcpOptions:
+                destinationPortRange:
+                  min: 80
+                  max: 80
+          - ingressRule:
+              description: HTTPS ingress
+              protocol: '6'
+              sourceType: CIDR_BLOCK
+              source: 0.0.0.0/0
+              tcpOptions:
+                destinationPortRange:
+                  min: 443
+                  max: 443
+          - ingressRule:
+              description: Path discovery
+              protocol: '1'
+              sourceType: CIDR_BLOCK
+              source: 10.0.0.0/16
+              icmpOptions:
+                type: 3
+                code: 4
+          egressRules:
+          - egressRule:
+              description: Node ports on the control plane (compact cluster)
+              protocol: '6'
+              destinationType: CIDR_BLOCK
+              destination: 10.0.0.32/27
+              tcpOptions:
+                destinationPortRange:
+                  min: 30000
+                  max: 32767
+          - egressRule:
+              description: Node ports on the workers
+              protocol: '6'
+              destinationType: CIDR_BLOCK
+              destination: 10.0.64.0/20
+              tcpOptions:
+                destinationPortRange:
+                  min: 30000
+                  max: 32767
+
+    # The API server load balancer.
+    #
+    # ONE LISTENER, ON 6443. This is CAPOCI gap #1 and the pilot's primary
+    # risk. Every port in both load-balancer reconcilers is APIServerPort()
+    # (network_load_balancer_reconciler.go:55,72,187; and the LBaaS equivalents
+    # at load_balancer_reconciler.go:52,69,151,158). There is no field here for
+    # a second listener -- CAPA has controlPlaneLoadBalancer.additionalListeners
+    # and CAPOCI has no equivalent.
+    #
+    # Control-plane machines fetch their real config from
+    # https://api-int.<clusterDomain>:22623/config/master, so 22623 must be
+    # served. hooks/infra-hook.sh adds that listener and a second backend set
+    # out of band at infraReady, and populates it at postProvision.
+    #
+    # That is safe from reconcile: IsNLBEqual compares only the display name
+    # and the apiserver-lb-backendset health checker
+    # (network_load_balancer_reconciler.go:301-320), and UpdateNLB sends only
+    # DisplayName plus that health checker (:122-150). Neither enumerates
+    # listeners, so a hook-created one is not pruned.
+    #
+    # loadBalancerType is left unset, which selects the NETWORK load balancer
+    # path at controllers/ocicluster_controller.go:262-270. Only the literal
+    # value "LB" takes the LBaaS path.
+    apiServerLoadBalancer:
+      name: CLUSTER_ID-apiserver
+      networkVisibility: Public
+# availabilityDomains is DELIBERATELY ABSENT.
+#
+# CAPOCI populates it itself: cloud/scope/cluster.go:137-141 reads the
+# current value and, when it is empty, calls ListAvailabilityDomains against
+# the compartment, then writes the result back with SetAvailabilityDomains
+# at :228. Machines pick an AD from that map (cloud/scope/machine.go:510).
+#
+# Supplying an empty map rather than omitting the key risks being read as
+# "zero availability domains" rather than "not specified", so the key is
+# left out entirely.
+#
+# Consequence worth stating: this example does not pin machines to
+# particular availability domains, so the three masters may or may not be
+# spread. That matches the aws-capa example's one-AZ departure in spirit --
+# this is a mechanism pilot, not an availability test -- but it is less
+# deliberate. Pin ADs before drawing any HA conclusion from a run.

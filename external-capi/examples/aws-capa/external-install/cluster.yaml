@@ -1,0 +1,286 @@
+# yamllint disable rule:document-start
+#
+# The disable covers the `---` SEPARATORS below, not a document-start marker:
+# this file holds several objects and the separators are structural. This
+# repository's .yamllint sets `document-start: present: false`, a rule written
+# for single-document files -- yamllint reports every `---` under it and
+# cannot tell a separator from a leading marker. The leading marker this file
+# used to carry has been removed; what is left cannot be.
+#
+# Why several objects in one file rather than one each, which is what
+# extra-manifests/ requires: this directory is NOT applied by the bootstrap
+# node. It is read by the installer's local Cluster API control plane, which
+# decodes multi-document YAML correctly (ObjectsFromManifest). The two
+# directories have genuinely different contracts.
+# Cluster API manifests for a `platform: external` install driven by CAPA.
+#
+# These are USER-SUPPLIED. The installer generates nothing for this platform:
+# it does not know the provider's API. It reads this directory, validates that
+# a core Cluster and an infrastructure object are present, creates them in its
+# temporary local control plane, and waits for Cluster.status.infrastructureReady.
+#
+# This file is modelled on what the installer generates for the INTEGRATED aws
+# platform (pkg/asset/manifests/aws/cluster.go, awsCluster), captured in
+# ../sample-aws-manifests/cluster-api/. It is deliberately close to it, so that
+# the External path is exercised against realistic infrastructure rather than a
+# toy VPC. Two deliberate departures from that sample are marked below.
+#
+# `run-create-command.sh` rewrites `CLUSTER_ID` to the run's INFRASTRUCTURE ID --
+# not the cluster name, as it did before the bootstrap increment -- so that
+# string is the name placeholder and must not be used for anything else. The
+# reason for the change, and the two-phase workflow it requires, are in
+# machines/README.md.
+#
+# Namespace: the installer forces every object into
+# openshift-cluster-api-guests (pkg/infrastructure/clusterapi/clusterapi.go:183),
+# so these values are for fidelity with the integrated sample, not load-bearing.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Cluster
+metadata:
+  name: CLUSTER_ID
+  namespace: openshift-cluster-api-guests
+spec:
+  clusterNetwork:
+    apiServerPort: 6443
+  controlPlaneEndpoint:
+    host: ""
+    port: 0
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: AWSCluster
+    name: CLUSTER_ID
+    namespace: openshift-cluster-api-guests
+---
+# CAPA creates this itself if it is absent -- the v6 pilot run logged
+# "AWSClusterControllerIdentity instance not found, creating a new instance".
+# The integrated path supplies it explicitly, so this one does too: relying on
+# a controller to fill in a missing object is not something the External
+# contract should assume of an arbitrary provider.
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSClusterControllerIdentity
+metadata:
+  name: default
+  namespace: openshift-cluster-api-guests
+spec:
+  allowedNamespaces:
+    list: null
+    selector: {}
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSCluster
+metadata:
+  name: CLUSTER_ID
+  namespace: openshift-cluster-api-guests
+spec:
+  # DEPARTURE 1 is RETIRED as of the bootstrap increment. Superseded text kept
+  # below, because the reasoning is still the reasoning -- only the conclusion
+  # changed.
+  #
+  #   "The integrated path names the cluster after the InfraID the installer
+  #    generates (e.g. aws-sample-dh4wr) and tags with that same InfraID, so
+  #    the tag CCM and machine-api look for always matches. On the External
+  #    path the user writes metadata.name by hand and cannot know the InfraID
+  #    in advance, so this tag is whatever the user chose. Whether that is
+  #    sufficient for the in-cluster consumers is NOT yet verified."
+  #
+  # What changed: the bootstrap machine's dataSecretName must be
+  # "<infraID>-bootstrap" and no one can choose that name, so the run now has
+  # to read the infrastructure ID out of the generated manifests and rewrite
+  # this tree anyway. Given that substitution exists, naming the whole tree by
+  # infrastructure ID costs nothing and makes this tag, the load balancer
+  # names and the subnet names agree with the cluster's own
+  # Infrastructure.status.infrastructureName. See
+  # machines/README.md for the workflow.
+  #
+  # The general question the departure raised is not retired, only this
+  # instance of it: a partner who does NOT run a two-phase workflow still
+  # cannot know the infrastructure ID.
+  additionalTags:
+    kubernetes.io/cluster/CLUSTER_ID: owned
+  bastion:
+    enabled: false
+  controlPlaneEndpoint:
+    host: ""
+    port: 0
+  controlPlaneLoadBalancer:
+    additionalListeners:
+    - healthCheck:
+        intervalSeconds: 10
+        path: /healthz
+        port: "22623"
+        protocol: HTTPS
+        thresholdCount: 2
+        timeoutSeconds: 10
+        unhealthyThresholdCount: 2
+      port: 22623
+      protocol: TCP
+      targetGroupIPType: ipv4
+    crossZoneLoadBalancing: true
+    healthCheck:
+      intervalSeconds: 10
+      thresholdCount: 2
+      timeoutSeconds: 10
+      unhealthyThresholdCount: 2
+    healthCheckProtocol: HTTPS
+    ingressRules:
+    - description: Machine Config Server internal traffic from cluster
+      fromPort: 22623
+      protocol: tcp
+      sourceSecurityGroupRoles:
+      - node
+      - controlplane
+      toPort: 22623
+    loadBalancerType: nlb
+    name: CLUSTER_ID-int
+    scheme: internal
+    targetGroupIPType: ipv4
+  network:
+    additionalControlPlaneIngressRules:
+    - description: MCS traffic from cluster network
+      fromPort: 22623
+      protocol: tcp
+      sourceSecurityGroupRoles:
+      - node
+      - controlplane
+      - apiserver-lb
+      toPort: 22623
+    - description: controller-manager
+      fromPort: 10257
+      protocol: tcp
+      sourceSecurityGroupRoles:
+      - controlplane
+      - node
+      toPort: 10257
+    - description: kube-scheduler
+      fromPort: 10259
+      protocol: tcp
+      sourceSecurityGroupRoles:
+      - controlplane
+      - node
+      toPort: 10259
+    - description: Bootstrap Konnectivity
+      fromPort: 8091
+      protocol: tcp
+      sourceSecurityGroupRoles:
+      - controlplane
+      - node
+      toPort: 8091
+    - cidrBlocks:
+      - 0.0.0.0/0
+      description: Bootstrap SSH Access
+      fromPort: 22
+      protocol: tcp
+      toPort: 22
+    cni:
+      cniIngressRules:
+      - description: ICMP
+        fromPort: -1
+        protocol: icmp
+        toPort: -1
+      - description: Port 22 (TCP)
+        fromPort: 22
+        protocol: tcp
+        toPort: 22
+      - description: Port 4789 (UDP) for VXLAN
+        fromPort: 4789
+        protocol: udp
+        toPort: 4789
+      - description: Port 6081 (UDP) for geneve
+        fromPort: 6081
+        protocol: udp
+        toPort: 6081
+      - description: Port 500 (UDP) for IKE
+        fromPort: 500
+        protocol: udp
+        toPort: 500
+      - description: Port 4500 (UDP) for IKE NAT
+        fromPort: 4500
+        protocol: udp
+        toPort: 4500
+      - description: ESP
+        fromPort: -1
+        protocol: "50"
+        toPort: -1
+      - description: Port 9000-9999 for node ports (TCP)
+        fromPort: 9000
+        protocol: tcp
+        toPort: 9999
+      - description: Port 9000-9999 for node ports (UDP)
+        fromPort: 9000
+        protocol: udp
+        toPort: 9999
+      - description: Service node ports (TCP)
+        fromPort: 30000
+        protocol: tcp
+        toPort: 32767
+      - description: Service node ports (UDP)
+        fromPort: 30000
+        protocol: udp
+        toPort: 32767
+    nodePortIngressRuleCidrBlocks:
+    - 10.0.0.0/16
+    # DEPARTURE 2 from the integrated manifest: one availability zone, not five.
+    #
+    # CAPA creates one NAT gateway per public subnet and each bills hourly, so
+    # the integrated five-AZ layout costs five times what this pilot needs to
+    # prove. The CIDRs are the first private/public pair the integrated
+    # generator produces for us-east-1, so the addressing is unchanged; only
+    # the zone count is. Restore the other four before drawing any conclusion
+    # about availability.
+    subnets:
+    - availabilityZone: us-east-1a
+      cidrBlock: 10.0.0.0/19
+      id: CLUSTER_ID-subnet-private-us-east-1a
+      isPublic: false
+    - availabilityZone: us-east-1a
+      cidrBlock: 10.0.160.0/22
+      id: CLUSTER_ID-subnet-public-us-east-1a
+      isPublic: true
+    vpc:
+      cidrBlock: 10.0.0.0/16
+  region: us-east-1
+  # Enabled for the bootstrap increment, as the note here previously said it
+  # would be. CAPA stores the bootstrap ignition here because that config is
+  # far larger than the 16 KiB EC2 user-data limit; the control-plane machines
+  # get a small pointer config and so need none of this.
+  #
+  # Both halves of the lifecycle belong to CAPA, which is why enabling this
+  # does not add anything to clean up by hand:
+  #   create  - awscluster_controller.go:413 ReconcileBucket
+  #   delete  - awscluster_controller.go:270 DeleteBucket
+  # and the ignition object itself is removed when the bootstrap AWSMachine is
+  # deleted (awsmachine_controller.go:999 deleteIgnitionBootstrapDataFromS3).
+  # The bucket delete therefore depends on the machine delete having happened
+  # first -- see the destroy note in machines/README.md.
+  #
+  # presignedURLDuration is what keeps IAM out of this: with it set, CAPA hands
+  # the booting instance a presigned GET URL (s3.go:219-231) and writes only a
+  # ForceSSLOnlyAccess deny into the bucket policy, instead of granting an
+  # instance role. This pilot creates no IAM.
+  #
+  # bestEffortDeleteObjects stays false on purpose. True would let CAPA ignore
+  # a failed object delete and then fail the bucket delete anyway; false makes
+  # a leak visible instead of quiet.
+  s3Bucket:
+    bestEffortDeleteObjects: false
+    name: openshift-bootstrap-data-CLUSTER_ID
+    presignedURLDuration: 1h0m0s
+  secondaryControlPlaneLoadBalancer:
+    crossZoneLoadBalancing: true
+    healthCheck:
+      intervalSeconds: 10
+      thresholdCount: 2
+      timeoutSeconds: 10
+      unhealthyThresholdCount: 2
+    healthCheckProtocol: HTTPS
+    ingressRules:
+    - cidrBlocks:
+      - 0.0.0.0/0
+      description: Kubernetes API Server traffic for public access
+      fromPort: 6443
+      protocol: tcp
+      toPort: 6443
+    loadBalancerType: nlb
+    name: CLUSTER_ID-ext
+    scheme: internet-facing
+    targetGroupIPType: ipv4

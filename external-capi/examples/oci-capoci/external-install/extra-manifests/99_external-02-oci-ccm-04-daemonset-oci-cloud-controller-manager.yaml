@@ -1,0 +1,112 @@
+# yamllint disable rule:indentation rule:brackets rule:line-length rule:comments
+#
+# COPIED, NOT WRITTEN -- object 5 of 5 from Oracle's bundle.
+#
+#   upstream  https://github.com/oracle-quickstart/oci-openshift
+#   commit    4944984e3895198405b512f610fe665a9976db28
+#   ref       tag v1.6.1, 2026-08-12
+#   path      custom_manifests/oci-ccm-csi-drivers/v1.34.0/01-oci-ccm.yml
+#   sha256    8a585cef8cb2d34834b30784cab277ca5fc80caa0bbc40e720516ae466a1fdc3
+#   object    DaemonSet/oci-cloud-controller-manager
+#
+# TRACKING UPSTREAM DRIFT. The permalink to the exact bytes this was copied
+# from is the upstream URL, then `/blob/`, then the commit, then the path --
+# all three are above. To check for drift, hash the current upstream file and
+# compare with the sha256 above:
+#
+#   git -C oci-openshift fetch origin && \
+#     git -C oci-openshift show origin/main:custom_manifests/oci-ccm-csi-drivers/v1.34.0/01-oci-ccm.yml | sha256sum
+#
+# If it differs, re-run tools/oci-capoci/gen-ccm-csi.py against the new
+# checkout. Do not hand-edit this file: it is generated, and a hand edit makes
+# the sha256 above a lie, which is the one thing that would make this header
+# worse than no header at all.
+#
+# One object per file because the bootstrap node applies this directory one
+# object per file and silently drops the rest of a multi-document one; the
+# installer refuses such a file outright. See oci-ccm-csi-bundle.md in this
+# directory for the full account: why these are day-0 while their config
+# Secrets are not, what the two deltas against upstream are, and the
+# partner-manifest supply-chain gap this bundle exposes.
+#
+# The yamllint disable is cosmetic only, and every rule in it is a house style
+# this repository applies to code it writes: Oracle indents sequences, writes
+# `[ "x" ]`, puts one space before a trailing comment and runs container args
+# past 120 columns. Reformatting a vendored file to satisfy them was tried and
+# broke it, and it would also destroy the one property that makes the sha256
+# above useful -- that these bytes can be diffed against upstream. See
+# oci-ccm-csi-bundle.md.
+#
+# THIS FILE CARRIES DELTA 1: the controller image is Oracle's namespace, not
+# the personal GHCR namespace upstream v1.34.0 points at. The two tags have
+# DIFFERENT digests, so this is a substitution and not a rename. Rationale and
+# both digests are in oci-ccm-csi-bundle.md.
+#
+# oci-ccm-05-daemon-set.yaml
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: oci-cloud-controller-manager
+  namespace: oci-cloud-controller-manager
+  labels:
+    k8s-app: oci-cloud-controller-manager
+spec:
+  selector:
+    matchLabels:
+      component: oci-cloud-controller-manager
+      tier: control-plane
+  updateStrategy:
+    type: RollingUpdate
+  template:
+    metadata:
+      labels:
+        component: oci-cloud-controller-manager
+        tier: control-plane
+    spec:
+      serviceAccountName: cloud-controller-manager
+      hostNetwork: true
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      tolerations:
+      - key: node.cloudprovider.kubernetes.io/uninitialized
+        value: "true"
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/control-plane
+        operator: Exists
+        effect: NoSchedule
+      - key: node-role.kubernetes.io/master
+        operator: Exists
+        effect: NoSchedule
+      - key: node.kubernetes.io/not-ready
+        operator: Exists
+        effect: NoSchedule
+      volumes:
+        - name: cfg
+          secret:
+            secretName: oci-cloud-controller-manager
+        - name: kubernetes
+          hostPath:
+            path: /etc/kubernetes
+      containers:
+        - name: oci-cloud-controller-manager
+          image: ghcr.io/oracle/cloud-provider-oci:v1.34.0
+          env:
+            - name: OPENSHIFT_NODE_LABEL_ID
+              value: node.openshift.io/os_id=rhel
+          command:
+            - /bin/bash
+            - -c
+            - |
+              #!/bin/bash
+              set -o allexport
+              if [[ -f /etc/kubernetes/apiserver-url.env ]]; then
+                source /etc/kubernetes/apiserver-url.env
+              fi
+              exec /usr/local/bin/oci-cloud-controller-manager --cloud-config=/etc/oci/cloud-provider.yaml --cloud-provider=oci --leader-elect-resource-lock=leases --concurrent-service-syncs=3 --v=2
+          volumeMounts:
+            - name: cfg
+              mountPath: /etc/oci
+              readOnly: true
+            - name: kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true

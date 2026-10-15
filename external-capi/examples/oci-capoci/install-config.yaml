@@ -1,0 +1,113 @@
+apiVersion: v1
+metadata:
+  name: CHANGE-ME
+baseDomain: CHANGE-ME
+platform:
+  external:
+    # Matches what Oracle's own OpenShift-on-OCI automation sets --
+    # oci-openshift/terraform-stacks/shared_modules/manifest/locals.tf.
+    platformName: oci
+    # The OCI cloud controller manager runs in-cluster and is delivered by
+    # external-install/extra-manifests/ plus the infraReady hook. See
+    # external-install/extra-manifests/README.md for why its config CANNOT be
+    # a day-0 manifest.
+    cloudControllerManager: External
+    clusterAPI:
+      name: oci
+      # NOT the CAPOCI binary. A #!/bin/sh wrapper that translates
+      # --health-addr into --health-probe-bind-address, which is the one
+      # installer-supplied flag CAPOCI does not declare (its own is at
+      # cluster-api-provider-oci/main.go:100, and pflag exits non-zero on an
+      # unknown flag).
+      #
+      # A wrapper is a legal binaryPath on purpose, not by accident:
+      # pkg/clusterapi/artifacts.go:195-200 says files that are not ELF "are
+      # accepted without a check rather than rejected, so that the override
+      # stays usable on developer workstations."
+      #
+      # Set CAPOCI_BINARY in the environment, or drop the real binary next to
+      # the shim. See scripts/capoci-shim.sh.
+      binaryPath: /tmp/capoci-artifacts/capoci-shim.sh
+      componentsPath: /tmp/capoci-artifacts/oci-infrastructure-components.yaml
+      # hooks are user-supplied programs the installer runs at three points.
+      # Program paths are relative to the external-install directory and must
+      # stay inside it.
+      #
+      # infraReady does three things, and the second is the one with no
+      # equivalent on AWS:
+      #
+      #   1. creates the cluster's api/api-int DNS, which nothing else on this
+      #      platform does.
+      #   2. adds a 22623 listener and backend set to the API load balancer.
+      #      CAPOCI's NLB has exactly one listener, on 6443, and no field for
+      #      another -- every port in its reconcilers is APIServerPort(). The
+      #      masters fetch their real config from api-int:22623, so without
+      #      this they boot with no OS config.
+      #   3. writes the OCI CCM and CSI config Secrets. These need the VCN,
+      #      service-lb subnet and security list OCIDs, none of which exist
+      #      before CAPI builds the network -- so they cannot be day-0
+      #      manifests. CAPOCI writes the created OCIDs back into the object's
+      #      SPEC (cloud/scope/vcn_reconciler.go:43,51), and infraReady reads
+      #      them from $OPENSHIFT_INSTALL_INFRA_JSON.
+      #
+      # postProvision creates the *.apps wildcard and populates the 22623
+      # backend set, both of which need things that do not exist at
+      # infraReady: the ingress load balancer is built by the cluster's own
+      # CCM minutes into bootstrap, and the control-plane instances do not
+      # exist until after infraReady returns.
+      #
+      # preDestroy removes all of it again. DNS records, the hook-created
+      # listener and backend set, the ingress load balancer the CCM built, and
+      # the bootstrap ignition object and its pre-authenticated request are
+      # all outside Cluster API ownership, so deleting the Cluster will not
+      # touch them.
+      hooks:
+        infraReady:
+          program: hooks/infra-hook.sh
+        postProvision:
+          program: hooks/infra-hook.sh
+          args:
+          - --input-service=openshift-ingress/router-external-default
+        preDestroy:
+          program: hooks/infra-hook.sh
+      # args are appended to the four arguments the installer supplies
+      # (pkg/clusterapi/external.go:153-158). Anything provider-specific comes
+      # from here.
+      #
+      # Unlike CAPA, CAPOCI needs NO feature gate for Ignition. It has no
+      # opinion about bootstrap data format at all: GetBootstrapData returns
+      # secret.Data["value"] verbatim (cloud/scope/machine.go:685-702) and the
+      # string "ignition" does not appear in its source. CAPA by contrast
+      # rejects AWSMachine.spec.ignition outright without
+      # BootstrapFormatIgnition=true.
+      #
+      # These two flags come from Oracle's own CAPOCI deployment for the
+      # in-cluster autoscaler
+      # (oci-openshift/terraform-stacks/shared_modules/manifest/locals.tf,
+      # declared at cluster-api-provider-oci/main.go:92-93):
+      #
+      #   init-oci-clients-on-startup=false
+      #       do not build OCI clients at process start. The installer starts
+      #       the controller before any credential Secret is guaranteed
+      #       present, so eager client construction is a startup failure
+      #       waiting to happen.
+      #
+      #   enable-instance-metadata-service-lookup is deliberately NOT set. It
+      #       is for a controller running ON an OCI instance; this one runs on
+      #       the installer host, which generally is not one.
+      args:
+      - --init-oci-clients-on-startup=false
+controlPlane:
+  name: master
+  replicas: 3
+# 0 gives a compact three-node cluster, which is what every aws-capa pilot run
+# used. external-install/machines/30_worker.yaml creates day-0 workers as
+# Cluster API Machines; this count does not control them and setting it
+# non-zero does NOT create workers on this platform -- the installer generates
+# no MachineSets for `platform: external`
+# (pkg/asset/machines/worker.go:807). Read that file before changing this.
+compute:
+- name: worker
+  replicas: 0
+pullSecret: ""
+sshKey: ""

@@ -170,8 +170,8 @@ Resources:
           ]
         Type: A
         AliasTarget:
-          HostedZoneId: !GetAtt IntApiElb.CanonicalHostedZoneID
-          DNSName: !GetAtt IntApiElb.DNSName
+          HostedZoneId: !If [IsConnected, !GetAtt ExtApiElb.CanonicalHostedZoneID, !GetAtt IntApiElb.CanonicalHostedZoneID]
+          DNSName: !If [IsConnected, !GetAtt ExtApiElb.DNSName, !GetAtt IntApiElb.DNSName]
 
   ExternalApiListener:
     Type: AWS::ElasticLoadBalancingV2::Listener

@@ -224,6 +224,7 @@ Outputs:
     Value: !Ref BootstrapInstance
 
   BootstrapPublicIp:
+    Condition: IsConnected
     Description: The bootstrap node public IP address.
     Value: !GetAtt BootstrapInstance.PublicIp
 

@@ -32,6 +32,13 @@ Parameters:
   VpcId:
     Description: The VPC-scoped resources will belong to this VPC.
     Type: AWS::EC2::VPC::Id
+  DisconnectedInstall:
+    AllowedValues:
+    - "yes"
+    - "no"
+    Default: "no"
+    Description: Disconnected install. Suppresses the public NLB; ingress traffic and *.apps are served by the internal NLB.
+    Type: String
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -47,6 +54,7 @@ Metadata:
       - VpcId
       - PublicSubnets
       - PrivateSubnets
+      - DisconnectedInstall
     - Label:
         default: "DNS"
       Parameters:
@@ -68,9 +76,13 @@ Metadata:
       HostedZoneId:
         default: "Public Hosted Zone ID"
 
+Conditions:
+  IsConnected: !Equals [!Ref DisconnectedInstall, "no"]
+
 Resources:
   ExtApiElb:
     Type: AWS::ElasticLoadBalancingV2::LoadBalancer
+    Condition: IsConnected
     Properties:
       Name: !Join ["-", [!Ref InfrastructureName, "ext"]]
       IpAddressType: ipv4
@@ -103,6 +115,7 @@ Resources:
 
   ExternalApiServerRecord:
     Type: AWS::Route53::RecordSetGroup
+    Condition: IsConnected
     Properties:
       Comment: Alias record for the API server
       HostedZoneId: !Ref HostedZoneId
@@ -158,10 +171,11 @@ Resources:
         Type: A
         AliasTarget:
           HostedZoneId: !GetAtt IntApiElb.CanonicalHostedZoneID
-          DNSName: !GetAtt ExtApiElb.DNSName
+          DNSName: !GetAtt IntApiElb.DNSName
 
   ExternalApiListener:
     Type: AWS::ElasticLoadBalancingV2::Listener
+    Condition: IsConnected
     Properties:
       DefaultActions:
       - Type: forward
@@ -266,8 +280,7 @@ Resources:
         - Type: forward
           TargetGroupArn:
             Ref: IngressHTTPTargetGroup
-        LoadBalancerArn:
-          Ref: ExtApiElb
+        LoadBalancerArn: !If [IsConnected, !Ref ExtApiElb, !Ref IntApiElb]
         Port: 80
         Protocol: TCP
 
@@ -296,8 +309,7 @@ Resources:
         - Type: forward
           TargetGroupArn:
             Ref: IngressHTTPSTargetGroup
-        LoadBalancerArn:
-          Ref: ExtApiElb
+        LoadBalancerArn: !If [IsConnected, !Ref ExtApiElb, !Ref IntApiElb]
         Port: 443
         Protocol: TCP
 
@@ -476,6 +488,7 @@ Outputs:
     Description: Hosted zone ID for the private DNS, which is required for private records.
     Value: !Ref IntDns
   ExternalApiLoadBalancerName:
+    Condition: IsConnected
     Description: Full name of the external API load balancer.
     Value: !GetAtt ExtApiElb.LoadBalancerFullName
   InternalApiLoadBalancerName:

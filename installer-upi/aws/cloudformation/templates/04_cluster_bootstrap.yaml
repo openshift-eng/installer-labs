@@ -54,6 +54,13 @@ Parameters:
     Description: Instance type for the bootstrap EC2 instance
     Default: "i3.large"
     Type: String
+  DisconnectedInstall:
+    AllowedValues:
+    - "yes"
+    - "no"
+    Default: "no"
+    Description: Disconnected install. The bootstrap node gets no public IP address.
+    Type: String
 
 Metadata:
   AWS::CloudFormation::Interface:
@@ -74,6 +81,7 @@ Metadata:
       - VpcId
       - AllowedBootstrapSshCidr
       - PublicSubnet
+      - DisconnectedInstall
     - Label:
         default: "Load Balancer Automation"
       Parameters:
@@ -102,6 +110,7 @@ Metadata:
 
 Conditions:
   DoRegistration: !Equals ["yes", !Ref AutoRegisterELB]
+  IsConnected: !Equals [!Ref DisconnectedInstall, "no"]
 
 Resources:
   BootstrapIamRole:
@@ -167,7 +176,7 @@ Resources:
       IamInstanceProfile: !Ref BootstrapInstanceProfile
       InstanceType: !Ref BootstrapInstanceType
       NetworkInterfaces:
-      - AssociatePublicIpAddress: "true"
+      - AssociatePublicIpAddress: !If [IsConnected, "true", "false"]
         DeviceIndex: "0"
         GroupSet:
         - !Ref "BootstrapSecurityGroup"

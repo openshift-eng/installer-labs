@@ -1,0 +1,250 @@
+# yamllint disable rule:document-start
+#
+# The disable covers the `---` SEPARATORS below, not a document-start marker:
+# this file holds several objects and the separators are structural. This
+# repository's .yamllint sets `document-start: present: false`, a rule written
+# for single-document files -- yamllint reports every `---` under it and
+# cannot tell a separator from a leading marker. The leading marker this file
+# used to carry has been removed; what is left cannot be.
+#
+# Why several objects in one file rather than one each, which is what
+# extra-manifests/ requires: this directory is NOT applied by the bootstrap
+# node. It is read by the installer's local Cluster API control plane, which
+# decodes multi-document YAML correctly (ObjectsFromManifest). The two
+# directories have genuinely different contracts.
+# Control-plane machines for a `platform: external` install driven by CAPA.
+#
+# USER-SUPPLIED, like everything in this tree. pkg/asset/machines/clusterapi.go
+# returns nil for this platform, so the installer generates no machine
+# manifests -- it reads this directory, creates what it finds, and waits for
+# Machine.status.phase to reach Provisioned or Running.
+#
+# Modelled on the integrated aws output captured in
+# ../../sample-aws-manifests/cluster-api/machines/10_{machine,inframachine}_aws-sample-dh4wr-master-{0,1,2}.yaml
+#
+# `run-create-command.sh` rewrites two tokens before `create cluster`:
+#   CLUSTER_ID     -> the run's infrastructure ID
+#   ami-REPLACE  -> the region's RHCOS AMI
+#
+#
+# WHAT IS DIFFERENT FROM BOOTSTRAP, AND WHY
+#
+# Three things, all consequences of how the control plane gets its ignition.
+#
+# 1. `dataSecretName: CLUSTER_ID-master`, shared by all three machines rather
+#    than one Secret per machine. Ignition Secrets are per ROLE, not per
+#    machine: there is no per-machine master Secret to point at and no way to
+#    ask for one.
+#
+#    CORRECTED: this note used to say the installer creates exactly two
+#    Secrets, bootstrap and master, because External implemented no
+#    IgnitionProvider and so took the default branch at
+#    pkg/infrastructure/clusterapi/clusterapi.go:367-369. That branch still
+#    creates two, but it is no longer the branch this platform takes. External
+#    now implements IgnitionProvider in
+#    pkg/infrastructure/external/clusterapi/ignition.go and publishes a third,
+#    `<infraID>-worker`, so that day-0 worker Machines have something valid to
+#    reference -- see ../machines/30_worker.yaml for why they must.
+#
+# 2. `storageType: UnencryptedUserData`, not ClusterObjectStore. The Secret
+#    above holds master.ign, which is a *pointer* config of about 1.6 KiB:
+#    it carries the merge source and the root CA and nothing else. That fits
+#    the 16 KiB EC2 user-data limit comfortably, so it needs no S3 round trip.
+#    Bootstrap needs one only because its config is the full ~300 KiB.
+#
+# 3. The pointer is why the InfraReady hook has to exist. It aims at
+#    https://api-int.<clusterDomain>:22623/config/master, and that name has to
+#    resolve from inside the VPC before the machine boots or the instance comes
+#    up with no OS config at all. On the integrated AWS path the record is
+#    created by pkg/infrastructure/aws/clusterapi/aws.go:112; here it is
+#    created by ../hooks/infra-hook.sh, called at the same point in the flow.
+#    A master will still reach Running without it -- `checkMachineReady` only
+#    wants a phase and an address -- so the install looks healthy for about
+#    forty minutes and then fails at bootkube stage `resolve-api-int-url`.
+#
+#
+# DEPARTURE FROM THE INTEGRATED MANIFEST: one availability zone, not three.
+#
+# ../cluster.yaml defines a single AZ (us-east-1a), so all three masters share
+# one private subnet and one AZ. etcd therefore has no zone redundancy, which
+# would be unacceptable for a real cluster and is fine for a mechanism pilot.
+# Restore the other zones in cluster.yaml and give each machine its own subnet
+# filter before drawing any HA conclusion from a run.
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-master-0
+  namespace: openshift-cluster-api-guests
+  labels:
+    # Load-bearing, and read from the CORE Machine rather than the AWSMachine.
+    # CAPA uses it for both security-group role selection and API load balancer
+    # registration (awsmachine_controller.go reconcileLBAttachment, via
+    # util.IsControlPlaneMachine). Without it a master is treated as a worker:
+    # it gets the node security group and is never added to the API target
+    # groups, so the API load balancers stay unhealthy after bootstrap tears
+    # down.
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-master
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: AWSMachine
+    name: CLUSTER_ID-master-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachine
+metadata:
+  name: CLUSTER_ID-master-0
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  additionalTags:
+    kubernetes.io/cluster/CLUSTER_ID: owned
+  ami:
+    id: ami-REPLACE
+  instanceType: m6i.xlarge
+  # Private, unlike bootstrap. Masters sit in the private subnet and are
+  # reached through the internal API load balancer; nothing outside the VPC
+  # needs to address them directly.
+  publicIP: false
+  ignition:
+    version: "3.2"
+    storageType: UnencryptedUserData
+  instanceMetadataOptions:
+    httpEndpoint: enabled
+    httpTokens: optional
+  rootVolume:
+    encrypted: true
+    size: 120
+    type: gp3
+  # Empty string, not absent: absent falls back to AWSCluster.spec.sshKeyName
+  # and then to a CAPA default key name. OpenShift delivers SSH keys through
+  # ignition.
+  sshKeyName: ""
+  subnet:
+    filters:
+    - name: tag:Name
+      values:
+      - CLUSTER_ID-subnet-private-us-east-1a
+#
+# Deliberately NOT set -- same reasoning as the bootstrap manifest:
+#
+#   iamInstanceProfile - the integrated path sets <infraID>-master-profile,
+#     created by the installer's own PreProvision. The External provider's
+#     PreProvision makes no cloud calls and this pilot creates no IAM. CAPA
+#     treats the field as optional.
+#
+#     Unlike bootstrap, this one has a consequence worth stating: a master
+#     with no instance profile has no cloud credentials, so any in-cluster
+#     component that expects to call AWS from a control-plane node will fail.
+#     On `platform: external` that is by design -- there is no in-tree cloud
+#     provider and `cloudControllerManager.state: External` says a partner
+#     supplies its own -- but it means this pilot cannot be used to judge
+#     anything about CCM behaviour.
+#
+#   securityGroupOverrides / additionalSecurityGroups - CAPA selects
+#     node + controlplane from AWSCluster.status.network.securityGroups using
+#     the control-plane label above.
+#
+#   any load balancer or target group reference - CAPA registers
+#     control-plane machines with AWSCluster.spec.{controlPlane,
+#     secondaryControlPlane}LoadBalancer and with every additional target
+#     group on them, which is how these machines become MCS (22623) targets
+#     as well as API (6443) targets.
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-master-1
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-master
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: AWSMachine
+    name: CLUSTER_ID-master-1
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachine
+metadata:
+  name: CLUSTER_ID-master-1
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  additionalTags:
+    kubernetes.io/cluster/CLUSTER_ID: owned
+  ami:
+    id: ami-REPLACE
+  instanceType: m6i.xlarge
+  publicIP: false
+  ignition:
+    version: "3.2"
+    storageType: UnencryptedUserData
+  instanceMetadataOptions:
+    httpEndpoint: enabled
+    httpTokens: optional
+  rootVolume:
+    encrypted: true
+    size: 120
+    type: gp3
+  sshKeyName: ""
+  subnet:
+    filters:
+    - name: tag:Name
+      values:
+      - CLUSTER_ID-subnet-private-us-east-1a
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-master-2
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-master
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: AWSMachine
+    name: CLUSTER_ID-master-2
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: AWSMachine
+metadata:
+  name: CLUSTER_ID-master-2
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  additionalTags:
+    kubernetes.io/cluster/CLUSTER_ID: owned
+  ami:
+    id: ami-REPLACE
+  instanceType: m6i.xlarge
+  publicIP: false
+  ignition:
+    version: "3.2"
+    storageType: UnencryptedUserData
+  instanceMetadataOptions:
+    httpEndpoint: enabled
+    httpTokens: optional
+  rootVolume:
+    encrypted: true
+    size: 120
+    type: gp3
+  sshKeyName: ""
+  subnet:
+    filters:
+    - name: tag:Name
+      values:
+      - CLUSTER_ID-subnet-private-us-east-1a

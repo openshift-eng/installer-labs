@@ -1,0 +1,112 @@
+# External load balancer for the ingress routers on `platform: external`.
+#
+# The cluster has no way to get one otherwise. On this platform the ingress
+# operator selects endpointPublishingStrategy.type: HostNetwork -- verified on
+# mrb-ext11 -- so the routers bind ports 80 and 443 on the nodes themselves and
+# the only Service the operator creates is router-internal-default, a ClusterIP.
+# Nothing asks for an external address, so nothing creates one, and `*.apps`
+# resolves to nothing. `authentication` and `console` stay unavailable and the
+# install never completes.
+#
+# CAPA cannot supply this. reconcileLBAttachment opens with
+# `if !machineScope.IsControlPlane() { return nil }`
+# (cluster-api-provider-aws/controllers/awsmachine_controller.go:1040-1043) and
+# is not configurable, and AWSCluster has no load balancer other than the two
+# control-plane ones. On External it would fail regardless: workers are
+# machine-api EC2 instances, not CAPI Machines, so that reconciler never runs.
+#
+# So the cluster asks for its own, through the same cloud controller manager the
+# partner already had to supply. This is the most native path available -- no
+# Elastic IPs, no out-of-band provisioning, no installer code that knows what an
+# NLB is.
+#
+#
+# HOW THE PORTS LINE UP
+#
+# There is nothing to pin. The chain, all of it verified on mrb-ext11:
+#
+#   internet :443
+#     -> NLB listener 443                  (from spec.ports[].port)
+#     -> target instance :31040            (nodePort, assigned by Kubernetes)
+#     -> kube-proxy
+#     -> endpoint 10.0.20.28:443           (the NODE ip, because hostNetwork)
+#     -> router container port 443
+#
+# `targetPort: 443` matches the router container's port 443, and because the
+# pod is hostNetwork that container port *is* the host port. The EndpointSlice
+# for this Service therefore holds node addresses rather than pod addresses,
+# which is what makes the last hop a no-op. The nodePort in the middle is an
+# implementation detail of instance-mode NLB targets and needs no coordination
+# with anything.
+#
+# A `curl https://<nlb>/` from outside returned 503 -- the router's own
+# no-route-matched page -- which is end-to-end proof that traffic crossed the
+# internet, the NLB, the nodePort and kube-proxy into a router pod.
+#
+#
+# WHY externalTrafficPolicy: Local
+#
+# It preserves the client source IP, which the router needs for
+# X-Forwarded-For, and it stops kube-proxy forwarding to nodes with no local
+# router pod. This is what OpenShift uses on the integrated platforms.
+#
+#
+# THE DNS RECORD IS NOT HERE
+#
+# The name this load balancer gets is assigned by the cloud at runtime, so it
+# cannot be written into a manifest. The installer's postProvision hook reads it
+# from this Service's status and creates the `*.apps` record. In install-config:
+#
+#   hooks:
+#     postProvision:
+#       program: hooks/infra-hook.sh
+#       args:
+#         - --input-service=openshift-ingress/router-external-default
+#         - --input-dns-zone=<public hosted zone id>
+#
+# The hook is told the namespace/name below, and nothing else connects the two.
+# If you rename this Service, change --input-service to match.
+#
+# Teardown is the same hook's pre-destroy path: `destroy cluster` never deletes
+# this Service -- the cluster is gone before the CCM could act on it -- so the
+# load balancer it built would be orphaned. The hook records the ARN when it
+# creates the record and deletes both on the way out.
+apiVersion: v1
+kind: Service
+metadata:
+  name: router-external-default
+  namespace: openshift-ingress
+  annotations:
+    # A network load balancer, matching what the integrated AWS path creates
+    # for ingress. Without this the in-tree cloud provider builds a Classic ELB.
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+
+    # Register only the nodes that run routers. Verified on mrb-ext11 by
+    # labelling one node of three and watching exactly one instance appear in
+    # both target groups.
+    #
+    # `node-role.kubernetes.io/worker=` is an empty-valued label, which is how
+    # OpenShift writes node roles. Change it if your routers run elsewhere --
+    # this is the one line in the file that depends on where they are, and on a
+    # cluster whose masters are schedulable and unlabelled it will match them
+    # too.
+    service.beta.kubernetes.io/aws-load-balancer-target-node-labels: node-role.kubernetes.io/worker=
+
+    # Cross-zone balancing so a single-AZ router deployment still serves
+    # traffic arriving in another zone.
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+spec:
+  type: LoadBalancer
+  # Preserve the client source IP. See above.
+  externalTrafficPolicy: Local
+  selector:
+    ingresscontroller.operator.openshift.io/deployment-ingresscontroller: default
+  ports:
+  - name: http
+    protocol: TCP
+    port: 80
+    targetPort: 80
+  - name: https
+    protocol: TCP
+    port: 443
+    targetPort: 443

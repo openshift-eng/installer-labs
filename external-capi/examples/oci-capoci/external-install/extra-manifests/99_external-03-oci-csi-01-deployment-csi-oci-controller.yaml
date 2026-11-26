@@ -1,0 +1,169 @@
+# yamllint disable rule:indentation rule:brackets rule:line-length rule:comments
+#
+# COPIED, NOT WRITTEN -- object 2 of 13 from Oracle's bundle.
+#
+#   upstream  https://github.com/oracle-quickstart/oci-openshift
+#   commit    4944984e3895198405b512f610fe665a9976db28
+#   ref       tag v1.6.1, 2026-08-12
+#   path      custom_manifests/oci-ccm-csi-drivers/v1.34.0/01-oci-csi.yml
+#   sha256    f3af5c329e11a2272836856d29f3cc6f0af852ec0e84c79850b3c6538a858803
+#   object    Deployment/csi-oci-controller
+#
+# TRACKING UPSTREAM DRIFT. The permalink to the exact bytes this was copied
+# from is the upstream URL, then `/blob/`, then the commit, then the path --
+# all three are above. To check for drift, hash the current upstream file and
+# compare with the sha256 above:
+#
+#   git -C oci-openshift fetch origin && \
+#     git -C oci-openshift show origin/main:custom_manifests/oci-ccm-csi-drivers/v1.34.0/01-oci-csi.yml | sha256sum
+#
+# If it differs, re-run tools/oci-capoci/gen-ccm-csi.py against the new
+# checkout. Do not hand-edit this file: it is generated, and a hand edit makes
+# the sha256 above a lie, which is the one thing that would make this header
+# worse than no header at all.
+#
+# One object per file because the bootstrap node applies this directory one
+# object per file and silently drops the rest of a multi-document one; the
+# installer refuses such a file outright. See oci-ccm-csi-bundle.md in this
+# directory for the full account: why these are day-0 while their config
+# Secrets are not, what the two deltas against upstream are, and the
+# partner-manifest supply-chain gap this bundle exposes.
+#
+# The yamllint disable is cosmetic only, and every rule in it is a house style
+# this repository applies to code it writes: Oracle indents sequences, writes
+# `[ "x" ]`, puts one space before a trailing comment and runs container args
+# past 120 columns. Reformatting a vendored file to satisfy them was tried and
+# broke it, and it would also destroy the one property that makes the sha256
+# above useful -- that these bytes can be diffed against upstream. See
+# oci-ccm-csi-bundle.md.
+#
+# oci-csi-02-controller-driver.yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  annotations:
+    deprecated.daemonset.template.generation: "1"
+  generation: 1
+  name: csi-oci-controller
+  namespace: oci-csi
+spec:
+  revisionHistoryLimit: 10
+  selector:
+    matchLabels:
+      app: csi-oci-controller
+  template:
+    metadata:
+      creationTimestamp: null
+      labels:
+        app: csi-oci-controller
+        role: csi-oci
+    spec:
+      nodeSelector:
+        node-role.kubernetes.io/control-plane: ""
+      containers:
+        - name: csi-volume-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v5.0.1
+          args:
+            - --csi-address=/var/run/shared-tmpfs/csi.sock
+            - --volume-name-prefix=csi
+            - --feature-gates=Topology=true
+            - --timeout=120s
+            - --leader-election
+            - --leader-election-namespace=oci-csi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oci/
+              readOnly: true
+            - mountPath: /var/run/shared-tmpfs
+              name: shared-tmpfs
+        - name: csi-fss-volume-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v5.0.1
+          args:
+            - --csi-address=/var/run/shared-tmpfs/csi-fss.sock
+            - --volume-name-prefix=csi-fss
+            - --feature-gates=Topology=true
+            - --timeout=120s
+            - --leader-election
+            - --leader-election-namespace=oci-csi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oci/
+              readOnly: true
+            - mountPath: /var/run/shared-tmpfs
+              name: shared-tmpfs
+        - name: csi-attacher
+          image: registry.k8s.io/sig-storage/csi-attacher:v4.6.1
+          args:
+            - --csi-address=/var/run/shared-tmpfs/csi.sock
+            - --timeout=120s
+            - --leader-election=true
+            - --leader-election-namespace=oci-csi
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oci/
+              readOnly: true
+            - mountPath: /var/run/shared-tmpfs
+              name: shared-tmpfs
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.11.1
+          args:
+            - --csi-address=/var/run/shared-tmpfs/csi.sock
+            - --leader-election
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - mountPath: /var/run/shared-tmpfs
+              name: shared-tmpfs
+        - name: snapshot-controller
+          image: registry.k8s.io/sig-storage/snapshot-controller:v6.3.0
+          args:
+            - --leader-election
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - mountPath: /var/run/shared-tmpfs
+              name: shared-tmpfs
+        - name: csi-snapshotter
+          image: registry.k8s.io/sig-storage/csi-snapshotter:v6.3.0
+          args:
+            - --csi-address=/var/run/shared-tmpfs/csi.sock
+            - --leader-election
+          imagePullPolicy: "IfNotPresent"
+          volumeMounts:
+            - mountPath: /var/run/shared-tmpfs
+              name: shared-tmpfs
+        - name: oci-csi-controller-driver
+          args:
+            - --endpoint=unix://var/run/shared-tmpfs/csi.sock
+            - --fss-csi-endpoint=unix://var/run/shared-tmpfs/csi-fss.sock
+          command:
+            - /usr/local/bin/oci-csi-controller-driver
+          image: ghcr.io/oracle/cloud-provider-oci:v1.34.0
+          imagePullPolicy: IfNotPresent
+          volumeMounts:
+            - name: config
+              mountPath: /etc/oci/
+              readOnly: true
+            - name: kubernetes
+              mountPath: /etc/kubernetes
+              readOnly: true
+            - mountPath: /var/run/shared-tmpfs
+              name: shared-tmpfs
+      volumes:
+        - name: config
+          secret:
+            secretName: oci-volume-provisioner
+        - name: kubernetes
+          hostPath:
+            path: /etc/kubernetes
+        - name: shared-tmpfs
+          emptyDir: {}
+      dnsPolicy: ClusterFirst
+      hostNetwork: true
+      imagePullSecrets:
+        - name: image-pull-secret
+      restartPolicy: Always
+      schedulerName: default-scheduler
+      serviceAccount: csi-oci-node-sa
+      serviceAccountName: csi-oci-node-sa
+      terminationGracePeriodSeconds: 30
+      tolerations:
+        - operator: Exists

@@ -1,0 +1,184 @@
+# AWS cloud controller manager for `platform: external`.
+#
+# This is the thing the installer cannot deliver and the cluster cannot finish
+# without. The kubelet runs with --cloud-provider=external, so every node comes
+# up carrying node.cloudprovider.kubernetes.io/uninitialized; only a CCM
+# removes it. Until it is removed no control-plane operator can schedule and
+# cluster-bootstrap times out at cb-bootstrap -- which is exactly where
+# mrb-ext11 stopped, with three masters registered, etcd healthy and the API
+# serving.
+#
+#
+# HOW IT GETS APPLIED
+#
+# The installer copies this file into the openshift manifest directory
+# (pkg/asset/manifests/openshift.go, externalExtraManifests), bootkube moves
+# that in with the rest of the manifests
+# (data/data/bootstrap/files/usr/local/bin/bootkube.sh.template:78), and
+# cluster-bootstrap applies it to the bootstrap control plane before it waits
+# for the required pods. So it is created while the nodes are still tainted,
+# which is the only moment at which it is useful.
+#
+# The tolerations below are what make that work: the pod has to be schedulable
+# onto a node that is NotReady and uninitialized, because that is the only kind
+# of node that exists when it runs.
+#
+#
+# WHAT IT DOES NOT SHIP, AND WHY
+#
+# No Namespace, ServiceAccount, ClusterRole or ClusterRoleBinding. All four
+# already exist by this point: the cluster-version operator runs on the
+# bootstrap node and applies the CloudControllerManager capability's manifests
+# from the release payload. Verified on mrb-ext11 before any node was Ready --
+# namespace openshift-cloud-controller-manager, serviceaccount
+# cloud-controller-manager, clusterrolebinding cloud-controller-manager and
+# configmap ccm-trusted-ca were all present.
+#
+# A partner shipping this for real should probably NOT do that. Depending on
+# OpenShift-provided RBAC couples a partner's component to OpenShift's
+# internals, and the platform-external CI job carries a TODO saying so. Oracle
+# does it the other way and ships a self-contained bundle with its own
+# namespace and RBAC (oci-openshift/custom_manifests/manifests/01-oci-ccm.yml).
+# This file reuses what is there because the pilot is testing the delivery
+# mechanism, not the packaging -- and reusing it keeps the diff against the
+# known-good CI manifest small enough to read.
+#
+#
+# THE IMAGE
+#
+# ${CCM_IMAGE} is substituted per run from the release payload:
+#
+#   oc adm release info --image-for=aws-cloud-controller-manager <release>
+#
+# It is not pinned here because the right image is whichever one matches the
+# release being installed.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: aws-cloud-controller-manager
+  namespace: openshift-cloud-controller-manager
+  labels:
+    k8s-app: aws-cloud-controller-manager
+    infrastructure.openshift.io/cloud-controller-manager: aws
+spec:
+  # Two, not three: enough to prove leader election works without needing all
+  # three masters to be schedulable before any of them is initialised.
+  replicas: 2
+  selector:
+    matchLabels:
+      k8s-app: aws-cloud-controller-manager
+      infrastructure.openshift.io/cloud-controller-manager: aws
+  strategy:
+    type: Recreate
+  template:
+    metadata:
+      annotations:
+        target.workload.openshift.io/management: '{"effect": "PreferredDuringScheduling"}'
+      labels:
+        k8s-app: aws-cloud-controller-manager
+        infrastructure.openshift.io/cloud-controller-manager: aws
+    spec:
+      priorityClassName: system-cluster-critical
+      hostNetwork: true
+      serviceAccountName: cloud-controller-manager
+      nodeSelector:
+        # Kept as-is from the CI manifest because this is the form that was
+        # verified working on mrb-ext11. `oc apply` warns that
+        # node-role.kubernetes.io/control-plane is the current spelling, and a
+        # partner writing this fresh should use that -- both labels are present
+        # on an OpenShift control-plane node.
+        node-role.kubernetes.io/master: ""
+      containers:
+      - name: cloud-controller-manager
+        image: ${CCM_IMAGE}
+        imagePullPolicy: IfNotPresent
+        command:
+        - /bin/bash
+        - -c
+        - |
+          #!/bin/bash
+          set -o allexport
+          if [[ -f /etc/kubernetes/apiserver-url.env ]]; then
+            source /etc/kubernetes/apiserver-url.env
+          fi
+          exec /bin/aws-cloud-controller-manager \
+          --cloud-provider=aws \
+          --use-service-account-credentials=true \
+          --configure-cloud-routes=false \
+          --leader-elect=true \
+          --leader-elect-lease-duration=137s \
+          --leader-elect-renew-deadline=107s \
+          --leader-elect-retry-period=26s \
+          --leader-elect-resource-namespace=openshift-cloud-controller-manager \
+          -v=2
+        env:
+        # The AWS SDK reads this path if the file exists and falls back to
+        # the instance metadata service if it does not, so this line is
+        # correct both for this pilot (no IAM, credentials in a Secret) and
+        # for a partner using an instance profile.
+        - name: AWS_SHARED_CREDENTIALS_FILE
+          value: /etc/aws/credentials
+        ports:
+        - name: https
+          containerPort: 10258
+          protocol: TCP
+        resources:
+          requests:
+            cpu: 200m
+            memory: 50Mi
+        terminationMessagePolicy: FallbackToLogsOnError
+        volumeMounts:
+        - name: host-etc-kube
+          mountPath: /etc/kubernetes
+          readOnly: true
+        - name: trusted-ca
+          mountPath: /etc/pki/ca-trust/extracted/pem
+          readOnly: true
+        - name: cloud-credentials
+          mountPath: /etc/aws
+          readOnly: true
+      affinity:
+        podAntiAffinity:
+          requiredDuringSchedulingIgnoredDuringExecution:
+          - topologyKey: kubernetes.io/hostname
+            labelSelector:
+              matchLabels:
+                k8s-app: aws-cloud-controller-manager
+                infrastructure.openshift.io/cloud-controller-manager: aws
+      tolerations:
+      # Every one of these is load-bearing. When this pod is created the only
+      # nodes in the cluster are masters that are NotReady and uninitialized,
+      # and a CCM that cannot be scheduled onto one of them can never remove
+      # the taint that is keeping them that way.
+      - key: node-role.kubernetes.io/master
+        effect: NoSchedule
+        operator: Exists
+      - key: node.cloudprovider.kubernetes.io/uninitialized
+        effect: NoSchedule
+        operator: Exists
+      - key: node.kubernetes.io/not-ready
+        effect: NoSchedule
+        operator: Exists
+      - key: node.kubernetes.io/not-ready
+        effect: NoExecute
+        operator: Exists
+        tolerationSeconds: 120
+      - key: node.kubernetes.io/unreachable
+        effect: NoExecute
+        operator: Exists
+        tolerationSeconds: 120
+      volumes:
+      - name: host-etc-kube
+        hostPath:
+          path: /etc/kubernetes
+          type: Directory
+      - name: trusted-ca
+        configMap:
+          name: ccm-trusted-ca
+          items:
+          - key: ca-bundle.crt
+            path: tls-ca-bundle.pem
+      - name: cloud-credentials
+        secret:
+          secretName: aws-cloud-credentials
+          optional: true

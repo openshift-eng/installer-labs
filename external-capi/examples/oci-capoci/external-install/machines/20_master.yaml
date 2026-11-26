@@ -1,0 +1,189 @@
+# yamllint disable rule:document-start
+#
+# The disable covers the `---` SEPARATORS below, not a document-start marker:
+# this file holds several objects and the separators are structural. This
+# repository's .yamllint sets `document-start: present: false`, a rule written
+# for single-document files -- yamllint reports every `---` under it and
+# cannot tell a separator from a leading marker. The leading marker this file
+# used to carry has been removed; what is left cannot be.
+#
+# Why several objects in one file rather than one each, which is what
+# extra-manifests/ requires: this directory is NOT applied by the bootstrap
+# node. It is read by the installer's local Cluster API control plane, which
+# decodes multi-document YAML correctly (ObjectsFromManifest). The two
+# directories have genuinely different contracts.
+# Control-plane machines for a `platform: external` install driven by CAPOCI.
+#
+# STATUS: NEVER RUN. See ../cluster.yaml.
+#
+# Three machines sharing one ignition Secret, CLUSTER_ID-master. Ignition
+# Secrets are per ROLE, not per machine: there is no per-machine master Secret
+# to point at and no way to ask for one. The installer publishes exactly three
+# -- bootstrap, master, worker -- from
+# pkg/infrastructure/external/clusterapi/ignition.go.
+#
+# WHAT IS DIFFERENT FROM BOOTSTRAP
+#
+# 1. No size problem. master.ign is a POINTER config of roughly 1.6 KiB: a
+#    merge source and the root CA, nothing else. That fits OCI's 32,000-byte
+#    metadata budget with room to spare, so masters need none of the object
+#    storage detour the bootstrap machine needs
+#    (../../docs/ignition-delivery.md).
+#
+# 2. Private subnet, no public IP.
+#
+# 3. The pointer is why BOTH hooks have to exist. It aims at
+#    https://api-int.<clusterDomain>:22623/config/master, and that requires
+#    two things nothing else on this platform provides:
+#
+#      - the NAME must resolve from inside the VCN. Created by
+#        hooks/infra-hook.sh at infraReady.
+#      - port 22623 must be SERVED by the API load balancer. CAPOCI's NLB has
+#        a single 6443 listener and no field for another, so the hook adds a
+#        listener and backend set out of band -- see ../cluster.yaml for why
+#        that survives reconcile, and ../../docs/capi-requirements.md §8 for
+#        the open question about populating its backends.
+#
+#    A master will still reach Running without either -- CAPI only wants a
+#    phase and an address -- so the install looks healthy for about forty
+#    minutes and then fails in bootkube. On the aws-capa pilot the failing
+#    stage was `resolve-api-int-url`.
+#
+# Tokens rewritten by run-create-command.sh:
+#   CLUSTER_ID        -> the run's infrastructure ID
+#   IMAGE_OCID        -> the imported RHCOS custom image OCID
+#   COMPARTMENT_OCID  -> $OCI_COMPARTMENT_ID
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-master-0
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-master
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: OCIMachine
+    name: CLUSTER_ID-master-0
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCIMachine
+metadata:
+  name: CLUSTER_ID-master-0
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  compartmentId: COMPARTMENT_OCID
+  imageId: IMAGE_OCID
+  shape: VM.Standard.E4.Flex
+  shapeConfig:
+    ocpus: "4"
+    memoryInGBs: "16"
+  bootVolumeSizeInGBs: "120"
+  networkDetails:
+    # DECORATIVE. CAPOCI never reads this field on the launch path -- see the
+    # long comment in 10_bootstrap.yaml, where ignoring it destroyed a machine.
+    # It is kept because it states the intent, and because the intent happens
+    # to be what CAPOCI does anyway: a control-plane-labelled machine is placed
+    # in the first control-plane-role subnet (cloud/scope/machine.go:1043),
+    # which is this one. Correct by coincidence, not by instruction.
+    subnetName: CLUSTER_ID-subnet-control-plane
+    assignPublicIp: false
+  freeformTags:
+    openshift-cluster-id: CLUSTER_ID
+    openshift-machine-role: master
+  metadata: {}
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-master-1
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-master
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: OCIMachine
+    name: CLUSTER_ID-master-1
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCIMachine
+metadata:
+  name: CLUSTER_ID-master-1
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  compartmentId: COMPARTMENT_OCID
+  imageId: IMAGE_OCID
+  shape: VM.Standard.E4.Flex
+  shapeConfig:
+    ocpus: "4"
+    memoryInGBs: "16"
+  bootVolumeSizeInGBs: "120"
+  networkDetails:
+    # DECORATIVE. CAPOCI never reads this field on the launch path -- see the
+    # long comment in 10_bootstrap.yaml, where ignoring it destroyed a machine.
+    # It is kept because it states the intent, and because the intent happens
+    # to be what CAPOCI does anyway: a control-plane-labelled machine is placed
+    # in the first control-plane-role subnet (cloud/scope/machine.go:1043),
+    # which is this one. Correct by coincidence, not by instruction.
+    subnetName: CLUSTER_ID-subnet-control-plane
+    assignPublicIp: false
+  freeformTags:
+    openshift-cluster-id: CLUSTER_ID
+    openshift-machine-role: master
+  metadata: {}
+---
+apiVersion: cluster.x-k8s.io/v1beta1
+kind: Machine
+metadata:
+  name: CLUSTER_ID-master-2
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  clusterName: CLUSTER_ID
+  bootstrap:
+    dataSecretName: CLUSTER_ID-master
+  infrastructureRef:
+    apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+    kind: OCIMachine
+    name: CLUSTER_ID-master-2
+---
+apiVersion: infrastructure.cluster.x-k8s.io/v1beta2
+kind: OCIMachine
+metadata:
+  name: CLUSTER_ID-master-2
+  namespace: openshift-cluster-api-guests
+  labels:
+    cluster.x-k8s.io/control-plane: ""
+spec:
+  compartmentId: COMPARTMENT_OCID
+  imageId: IMAGE_OCID
+  shape: VM.Standard.E4.Flex
+  shapeConfig:
+    ocpus: "4"
+    memoryInGBs: "16"
+  bootVolumeSizeInGBs: "120"
+  networkDetails:
+    # DECORATIVE. CAPOCI never reads this field on the launch path -- see the
+    # long comment in 10_bootstrap.yaml, where ignoring it destroyed a machine.
+    # It is kept because it states the intent, and because the intent happens
+    # to be what CAPOCI does anyway: a control-plane-labelled machine is placed
+    # in the first control-plane-role subnet (cloud/scope/machine.go:1043),
+    # which is this one. Correct by coincidence, not by instruction.
+    subnetName: CLUSTER_ID-subnet-control-plane
+    assignPublicIp: false
+  freeformTags:
+    openshift-cluster-id: CLUSTER_ID
+    openshift-machine-role: master
+  metadata: {}

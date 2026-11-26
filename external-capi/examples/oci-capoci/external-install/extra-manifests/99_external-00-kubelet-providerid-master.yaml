@@ -1,0 +1,89 @@
+# yamllint disable rule:line-length
+#
+# The long line is the Ignition data URL carrying the base64 of the script
+# reproduced in full below. Ignition requires file contents as a single data
+# URL, so it cannot be wrapped; the plaintext under it is what a reviewer
+# should read instead.
+#
+# Give every node a cloud provider ID, so the OCI cloud controller manager can
+# identify it.
+#
+# Adapted from Oracle's own
+# oci-openshift/custom_manifests/butane/oci-kubelet-providerid-master.bu, which
+# IS in production use -- but there it is applied by Agent-based installation,
+# not by this path, and the script below is hardened relative to Oracle's. See
+# README.md.
+#
+# STATUS: has run. Rendered by the bootstrap machine-config server and applied
+# by every master on first boot during the 2026-10-01 run. The earlier "STATUS:
+# NEVER RUN" banner here is removed rather than amended because it is now
+# simply false.
+#
+# This is half of what `platform: external` needs before a node can go Ready;
+# the other half is the CCM itself, and on OCI the CCM's CONFIG cannot be a
+# day-0 manifest at all. Read README.md before adding one.
+#
+# A MachineConfig works here -- rather than needing a running Machine Config
+# Operator -- because the bootstrap machine-config server renders everything in
+# the openshift manifest directory into the config it serves at
+# api-int:22623/config/master. Machines fetch that on first boot, so the unit
+# below runs before their kubelet ever registers.
+#
+# CORRECTION, AFTER A RUN. This block used to say that Oracle's
+# oci-hostname-update.service was "left out deliberately to keep this example
+# to one concern", and that the consequence was merely that "some CCM lookups
+# that fall back to name matching will not find the instance". Both halves were
+# wrong, and the superseded text is quoted here rather than deleted.
+#
+# MEASURED: with no hostname unit, every machine registers as
+# "localhost.localdomain" --
+#
+#     NAME                    STATUS     ROLES                  AGE   VERSION
+#     localhost.localdomain   NotReady   control-plane,master   88s   v1.36.3
+#
+# -- so three masters contend for ONE Node object and the control plane never
+# forms. It is not a name-matching nicety; it is a hard blocker, and it was the
+# second of the two reasons the 2026-10-01 run produced no cluster.
+#
+# The fix is a separate manifest, 99_external-01-oci-hostname-{master,worker}
+# .yaml, hardened relative to Oracle's unit in three ways it documents inline.
+# It is separate for the same "one concern" reason given above -- that part of
+# the judgement still holds. What did not hold is treating the concern as
+# optional.
+apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  labels:
+    machineconfiguration.openshift.io/role: master
+  name: 00-master-oci-kubelet-providerid
+spec:
+  config:
+    ignition:
+      version: 3.4.0
+    storage:
+      files:
+      - path: /usr/local/bin/oci-kubelet-providerid
+        mode: 493
+        overwrite: true
+        contents:
+          source: data:text/plain;charset=utf-8;base64,IyEvYmluL2Jhc2gKIyBSZWNvcmQgdGhpcyBpbnN0YW5jZSdzIGNsb3VkIHByb3ZpZGVyIElEIGZvciB0aGUga3ViZWxldC4KIwojIE5lZWRlZCBiZWNhdXNlIGBwbGF0Zm9ybTogZXh0ZXJuYWxgIHJ1bnMgdGhlIGt1YmVsZXQgd2l0aAojIC0tY2xvdWQtcHJvdmlkZXI9ZXh0ZXJuYWwsIHNvIHRoZSBjbG91ZCBjb250cm9sbGVyIG1hbmFnZXIgaGFzIHRvIG1hdGNoIGEKIyBOb2RlIG9iamVjdCBiYWNrIHRvIGEgY2xvdWQgaW5zdGFuY2UuIEl0IGRvZXMgdGhhdCBieSBwcm92aWRlcklELCBmYWxsaW5nCiMgYmFjayB0byBhIGxvb2t1cCBieSBub2RlIG5hbWUuIFNldHRpbmcgcHJvdmlkZXJJRCBleHBsaWNpdGx5IHJlbW92ZXMgdGhlCiMgZ3Vlc3N3b3JrLgojCiMgVGhlIGZvcm0gYW5kIHRoZSBtZXRhZGF0YSBlbmRwb2ludCBhcmUgT3JhY2xlJ3MsIGZyb20KIyBvY2ktb3BlbnNoaWZ0L2N1c3RvbV9tYW5pZmVzdHMvYnV0YW5lL29jaS1rdWJlbGV0LXByb3ZpZGVyaWQtbWFzdGVyLmJ1OgojIHByb3ZpZGVySUQgaXMgIm9jaTovLzxpbnN0YW5jZSBPQ0lEPiIgYW5kIHRoZSBPQ0lEIGNvbWVzIGZyb20gdGhlIHYyCiMgaW5zdGFuY2UgbWV0YWRhdGEgc2VydmljZSwgd2hpY2ggUkVRVUlSRVMgdGhlICJBdXRob3JpemF0aW9uOiBCZWFyZXIgT3JhY2xlIgojIGhlYWRlciAtLSBhbiB1bmF1dGhlbnRpY2F0ZWQgcmVhZCBvZiAvb3BjL3YyIHJldHVybnMgNDAxLgojCiMgRGlmZmVyZW5jZXMgZnJvbSBPcmFjbGUncyBzY3JpcHQsIGJvdGggZGVsaWJlcmF0ZToKIyAgIC0gcmV0cmllcyBhbmQgYSBoYXJkIGZhaWx1cmUgb24gYW4gZW1wdHkgT0NJRC4gT3JhY2xlJ3MgYGN1cmwgLXNMYCB3aXRoIG5vCiMgICAgIC0tcmV0cnkgd3JpdGVzIGFuIGVtcHR5IHByb3ZpZGVySUQgaWYgdGhlIG1ldGFkYXRhIHNlcnZpY2UgaXMgbm90IHVwCiMgICAgIHlldCwgYW5kIHRoZXJlIGlzIG5vIHNlY29uZCBjaGFuY2Ugb25jZSB0aGUgTm9kZSBoYXMgcmVnaXN0ZXJlZC4KIyAgIC0gdGhlIHBhcmVudCBkaXJlY3RvcnkgaXMgY3JlYXRlZC4gT24gYSBmcmVzaCBSSENPUwojICAgICAvZXRjL3N5c3RlbWQvc3lzdGVtL2t1YmVsZXQuc2VydmljZS5kIG1heSBub3QgZXhpc3QgeWV0LgpzZXQgLWUgLW8gcGlwZWZhaWwKCk5PREVDT05GPS9ldGMvc3lzdGVtZC9zeXN0ZW0va3ViZWxldC5zZXJ2aWNlLmQvMjAtb2NpLXByb3ZpZGVyaWQuY29uZgoKaWYgWyAtZSAiJHtOT0RFQ09ORn0iIF07IHRoZW4KICAgIGVjaG8gIk5vdCByZXBsYWNpbmcgZXhpc3RpbmcgJHtOT0RFQ09ORn0iCiAgICBleGl0IDAKZmkKCklNRFM9aHR0cDovLzE2OS4yNTQuMTY5LjI1NC9vcGMvdjIKSU5TVEFOQ0VfSUQ9JChjdXJsIC1mU3MgLS1yZXRyeSAxMCAtLXJldHJ5LWRlbGF5IDMgLS1yZXRyeS1jb25ucmVmdXNlZCBcCiAgICAtSCAiQXV0aG9yaXphdGlvbjogQmVhcmVyIE9yYWNsZSIgIiR7SU1EU30vaW5zdGFuY2UvaWQiKQoKaWYgWyAteiAiJHtJTlNUQU5DRV9JRH0iIF07IHRoZW4KICAgIGVjaG8gIkVSUk9SOiBjYW5ub3Qgb2J0YWluIHRoZSBpbnN0YW5jZSBPQ0lEIGZyb20gdGhlIG1ldGFkYXRhIHNlcnZpY2UuIiA+JjIKICAgIGV4aXQgMQpmaQoKUFJPVklERVJfSUQ9Im9jaTovLyR7SU5TVEFOQ0VfSUR9IgplY2hvICJTZXR0aW5nIEtVQkVMRVRfUFJPVklERVJJRD0ke1BST1ZJREVSX0lEfSIKCm1rZGlyIC1wICIkKGRpcm5hbWUgIiR7Tk9ERUNPTkZ9IikiCmNhdCA+ICIke05PREVDT05GfSIgPDxFT0YKW1NlcnZpY2VdCkVudmlyb25tZW50PSJLVUJFTEVUX1BST1ZJREVSSUQ9JHtQUk9WSURFUl9JRH0iCkVPRgo=
+    systemd:
+      units:
+      - name: oci-kubelet-providerid.service
+        enabled: true
+        contents: |
+          [Unit]
+          Description=Fetch the kubelet provider id from the OCI instance metadata service
+          # The kubelet reads its drop-in directory at start, so this has to have
+          # finished before it does -- there is no second chance once the Node is
+          # registered without a providerID.
+          After=NetworkManager-wait-online.service
+          Before=kubelet.service
+          [Service]
+          ExecStart=/usr/local/bin/oci-kubelet-providerid
+          Type=oneshot
+          RemainAfterExit=yes
+          StandardOutput=journal+console
+          StandardError=journal+console
+          [Install]
+          WantedBy=network-online.target
